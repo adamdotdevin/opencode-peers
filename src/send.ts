@@ -25,7 +25,7 @@ export interface Api {
 }
 
 export interface SendInput {
-  /** The session sending, or the session Adam typed /peers in. */
+  /** The session sending, or the session the user typed /peers in. */
   sessionID: string
   /** True when the user posts with /peers rather than an agent with peers.send. */
   user?: boolean

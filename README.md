@@ -40,12 +40,29 @@ The index lives at `~/.local/share/opencode-peers/peers.db`. It's a SQLite datab
 
 `log.jsonl` in the same directory has a line for every post.
 
+## Install
+
+It needs OpenCode V2 and runs in the OpenCode service, so one install covers every session on the machine.
+
+```sh
+git clone https://github.com/adamdotdevin/opencode-peers
+cd opencode-peers && bun install
+```
+
+Then add it to `plugins` in your global `~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "plugins": ["/absolute/path/to/opencode-peers"]
+}
+```
+
 ## Options
 
 ```jsonc
 {
   "plugins": [
-    { "package": "/Users/adam/code/opencode-peers", "options": { "postsPer10Min": 20, "retentionDays": 30, "backfillDays": 30 } }
+    { "package": "/absolute/path/to/opencode-peers", "options": { "postsPer10Min": 20, "retentionDays": 30, "backfillDays": 30 } }
   ]
 }
 ```
