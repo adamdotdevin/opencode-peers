@@ -39,28 +39,35 @@ export default Plugin.define({
         { ...(current() ? { sessionID: current() } : {}) },
         { location: location() },
       )) as ListOutput
-      if (boards.length + sessions.length === 0)
-        return context.ui.toast.show({ message: "No other sessions are running" })
+      if (boards.length + sessions.length === 0) return context.ui.toast.show({ message: "No sessions to message" })
       const options = [
-        ...boards.map((board) => ({
-          title: board.members.join(", "),
-          description: board.last,
-          category: "Groups",
-          value: { type: "board", id: board.id, name: board.members.join(", "), detail: board.last } as Target,
-        })),
         ...sessions.map((session) => ({
           title: session.title,
           description: `${session.where} · ${session.state === "busy" ? "working" : session.active}`,
           category: "Sessions",
           value: { type: "session", id: session.id, name: session.title } as Target,
         })),
+        ...boards.map((board) => ({
+          title: board.members.join(", "),
+          description: board.last && `${board.last.active} · ${board.last.text}`,
+          category: "Groups",
+          value: {
+            type: "board",
+            id: board.id,
+            name: board.members.join(", "),
+            detail: board.last && `${board.last.from}, ${board.last.active}: ${board.last.text}`,
+          } as Target,
+        })),
       ]
-      const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
-      context.ui.dialog.set({ size: "large" })
-      const target = await picked
-      if (!target) return
-      const text = await context.ui.dialog.prompt({ title: target.name, description: target.detail })
-      if (text?.trim()) await deliver(target, text.trim())
+      // Escape in the message goes back to the list; Escape in the list closes it.
+      for (;;) {
+        const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
+        context.ui.dialog.set({ size: "large" })
+        const target = await picked
+        if (!target) return
+        const text = (await context.ui.dialog.prompt({ title: target.name, description: target.detail, placeholder: "Message" }))?.trim()
+        if (text) return deliver(target, text)
+      }
     }
 
     context.keymap.layer(() => ({
@@ -78,7 +85,7 @@ export default Plugin.define({
             const id = raw.split(/\s+/)[0]!
             const text = raw.slice(id.length).trim()
             if (!/^(brd|ses)_/.test(id) || !text)
-              return context.ui.toast.show({ message: "Use /peers on its own to pick, or /peers <brd_… or ses_…> <message>" })
+              return context.ui.toast.show({ title: "Usage", message: "/peers <ses_… or brd_…> <message>" })
             if (id.startsWith("brd_")) return void (await deliver({ type: "board", id, name: id }, text))
             const session = await context.client.session.get({ sessionID: id }).catch(() => undefined)
             if (!session) return context.ui.toast.show({ message: `No session ${id}`, variant: "error" })

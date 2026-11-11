@@ -425,8 +425,11 @@ describe("picker list", () => {
     const { board } = await send(store, api, { sessionID: "ses_a", to: "ses_b", text: "rebasing now\nmore" }, { postsPer10Min: 20, now: NOW })
     await send(store, api, { sessionID: "user", user: true, to: board, text: "hold off" }, { postsPer10Min: 20, now: NOW + 60_000 })
     const result = list(store, undefined, NOW + 120_000)
-    expect(result.boards).toEqual([{ id: board, members: ["Billing", "Gateway"], last: "You, 1m ago: hold off" }])
+    expect(result.boards).toEqual([
+      { id: board, members: ["Billing", "Gateway"], last: { from: "You", active: "1m ago", text: "hold off" } },
+    ])
     expect(result.sessions.map((entry) => entry.title).sort()).toEqual(["Billing", "Gateway"])
+    expect(result.sessions[0]!.where).toBe(path.basename(repo))
     expect(list(store, "ses_a", NOW).sessions.map((entry) => entry.id)).toEqual(["ses_b"])
     apply({ type: "session.deleted", data: { sessionID: "ses_a" } })
     apply({ type: "session.deleted", data: { sessionID: "ses_b" } })

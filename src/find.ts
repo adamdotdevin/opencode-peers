@@ -245,24 +245,41 @@ export function boardCard(store: Store, id: string, now = Date.now()): BoardCard
   }
 }
 
-/** What the TUI picker shows: boards with recent posts first, then live sessions near the one it opened in. */
+const BOARDS = 5
+const DEFAULT_BRANCHES = new Set(["dev", "main", "master"])
+
+/** Where a session works, as the home screen shows it: the repo, plus its branch unless that's the default one. */
+function where(directory: string, branch?: string) {
+  const repo = repoOf(directory)
+  const name = repo ? path.basename(path.dirname(repo)) : path.basename(directory)
+  return branch && !DEFAULT_BRANCHES.has(branch) ? `${name} ⎇ ${branch}` : name
+}
+
+/** What the TUI picker shows: live sessions near the one it opened in, then this session's and recent boards. */
 export function list(store: Store, sessionID = "", now = Date.now()): ListOutput {
   const recent = store.db
     .query<{ board_id: string }, []>("select board_id from post group by board_id order by max(time) desc limit 20")
     .all()
     .map((row) => row.board_id)
-  const boards = [...new Set([...store.boardsOf(sessionID), ...recent])].map((id) => {
-    const members = store.members(id).map((member) => store.session(member)?.title || member)
-    const post = store.lastPost(id)
-    const last = post && `${post.from_id === "user" ? "You" : post.from_title || post.from_id}, ${ago(post.time, now)}: ${post.text.split("\n")[0]}`
-    return { id, members, ...(last ? { last } : {}) }
-  }).filter((board) => board.members.length > 0)
+  const boards = [...new Set([...store.boardsOf(sessionID), ...recent])]
+    .map((id) => {
+      const members = store.members(id).map((member) => store.session(member)?.title || member)
+      const post = store.lastPost(id)
+      const last = post && {
+        from: post.from_id === "user" ? "You" : post.from_title || post.from_id,
+        active: ago(post.time, now),
+        text: post.text.split("\n")[0]!,
+      }
+      return { id, members, ...(last ? { last } : {}) }
+    })
+    .filter((board) => board.members.length > 0)
+    .slice(0, BOARDS)
   const sessions = find(store, sessionID, { limit: 30 }, now).sessions.map((card) => ({
     id: card.id,
     title: card.title || "(untitled)",
     state: card.state,
     active: card.active,
-    where: card.branch ?? path.basename(card.directory),
+    where: where(card.directory, card.branch),
   }))
-  return { boards, sessions }
+  return { sessions, boards }
 }

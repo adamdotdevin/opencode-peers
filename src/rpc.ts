@@ -15,7 +15,15 @@ export const Peers = Rpc.define({
             type: "array",
             items: {
               type: "object",
-              properties: { id: text, members: { type: "array", items: text }, last: text },
+              properties: {
+                id: text,
+                members: { type: "array", items: text },
+                last: {
+                  type: "object",
+                  properties: { from: text, active: text, text },
+                  required: ["from", "active", "text"],
+                },
+              },
               required: ["id", "members"],
             },
           },
@@ -55,7 +63,7 @@ export const Peers = Rpc.define({
 })
 
 export interface ListOutput {
-  boards: { id: string; members: string[]; last?: string }[]
+  boards: { id: string; members: string[]; last?: { from: string; active: string; text: string } }[]
   sessions: { id: string; title: string; state: string; active: string; where: string }[]
 }
 
