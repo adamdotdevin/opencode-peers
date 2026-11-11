@@ -69,12 +69,17 @@ interface Message {
 export async function content(
   source: Database,
   store: Store,
-  options: { since: number; until: number; slice?: number; pause?: number },
+  options: { since: number; until: number; slice?: number; pause?: number; signal?: AbortSignal },
 ) {
+  const done = new Set(
+    store.db.query<{ id: string }, []>("select id from session where backfilled = 1").all().map((row) => row.id),
+  )
   const ids = source
     .query<{ id: string }, [number]>("select id from session_v2 where time_updated > ? order by time_updated desc")
     .all(options.since)
     .map((row) => row.id)
+    .filter((id) => !done.has(id))
+  const mark = store.db.query("update session set backfilled = 1 where id = ?")
   const messages = source.query<Message, [string, number, string, number, number]>(
     `select type, time_created, data from (
        select type, seq, time_created, data from session_message
@@ -86,11 +91,13 @@ export async function content(
   )
   const slice = options.slice ?? 50
   for (let start = 0; start < ids.length; start += slice) {
+    if (options.signal?.aborted) return start
     store.transaction(() => {
       for (const id of ids.slice(start, start + slice)) {
         const session = store.session(id)
         if (!session) continue
         for (const message of messages.all(id, options.until, id, options.until, 25)) indexMessage(store, session, message)
+        mark.run(id)
       }
     })
     await Bun.sleep(options.pause ?? 50)
@@ -118,16 +125,25 @@ function indexMessage(store: Store, session: { id: string; root_id: string; dire
   }
 }
 
-/** Runs the header copy, then the one-time content backfill if it hasn't finished before. */
-export async function backfill(store: Store, options: { file?: string; days: number; now?: number }) {
+/**
+ * Runs the header copy, then the one-time content backfill if it hasn't finished. An interrupted backfill resumes
+ * where it stopped, with the same cutoff, so nothing is indexed twice.
+ */
+export async function backfill(
+  store: Store,
+  options: { file?: string; days: number; now?: number; signal?: AbortSignal },
+) {
   const file = options.file ?? openCodeDatabase()
   if (!existsSync(file)) return { sessions: 0, indexed: 0 }
   const source = new Database(file, { readonly: true })
   try {
     const sessions = headers(source, store)
     if (store.meta("backfill") === "done") return { sessions, indexed: 0 }
-    const now = options.now ?? Date.now()
-    const indexed = await content(source, store, { since: now - options.days * 86_400_000, until: now })
+    const until = Number(store.meta("backfill.until") ?? options.now ?? Date.now())
+    store.setMeta("backfill.until", String(until))
+    const since = until - options.days * 86_400_000
+    const indexed = await content(source, store, { since, until, signal: options.signal })
+    if (options.signal?.aborted) return { sessions, indexed }
     store.setMeta("backfill", "done")
     return { sessions, indexed }
   } finally {

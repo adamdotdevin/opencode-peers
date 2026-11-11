@@ -50,7 +50,9 @@ create table if not exists session (
   title text not null default '',
   busy integer not null default 0,
   archived integer not null default 0,
-  updated integer not null default 0
+  updated integer not null default 0,
+  -- Set once the one-time backfill has read this session's history.
+  backfilled integer not null default 0
 );
 create index if not exists session_root on session (root_id);
 

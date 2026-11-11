@@ -366,6 +366,31 @@ describe("backfill", () => {
     expect(second.indexed).toBe(0)
     expect(store.db.query("select count(*) n from doc").get()).toEqual({ n: 2 })
   })
+
+  test("an interrupted backfill resumes without indexing twice", async () => {
+    const file = path.join(tmp("resume"), "opencode.db")
+    const source = new Database(file)
+    source.run(`create table session_v2 (id text primary key, parent_id text, project_id text, directory text, title text,
+      time_updated integer, time_busy integer, time_idle integer, time_archived integer)`)
+    source.run(`create table session_message (id text primary key, session_id text, type text, seq integer, time_created integer, data text)`)
+    for (const id of ["ses_1", "ses_2"]) {
+      source.run(`insert into session_v2 values ('${id}', null, 'p', '${repo}', '${id}', ${NOW - 1000}, null, null, null)`)
+      source.query("insert into session_message values (?, ?, 'user', 1, ?, ?)").run(`m-${id}`, id, NOW - 500, JSON.stringify({ text: `prompt ${id}` }))
+    }
+    source.close()
+
+    const stopped = new AbortController()
+    stopped.abort()
+    expect((await backfill(store, { file, days: 30, now: NOW, signal: stopped.signal })).indexed).toBe(0)
+    expect(store.meta("backfill")).toBeUndefined()
+    store.db.query("update session set backfilled = 1 where id = 'ses_1'").run()
+    store.addDoc({ text: "prompt ses_1", sessionID: "ses_1", rootID: "ses_1", kind: "prompt", time: NOW - 500 })
+
+    // A later start keeps the first cutoff and skips the session already read.
+    await backfill(store, { file, days: 30, now: NOW + 60_000 })
+    expect(store.meta("backfill.until")).toBe(String(NOW))
+    expect(store.db.query("select text from doc order by text").all()).toEqual([{ text: "prompt ses_1" }, { text: "prompt ses_2" }])
+  })
 })
 
 writeFileSync(path.join(repo, ".keep"), "")

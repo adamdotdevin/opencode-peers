@@ -13,6 +13,9 @@ export const ID = "peers"
 const DAY = 86_400_000
 
 interface Shared {
+  /** The module that started the shared state. A reload brings a new one, which restarts it with the new code. */
+  module?: symbol
+  stopped?: AbortController
   store?: Store
   contexts: Plugin.Context[]
   subscription?: { ctx: Plugin.Context; controller: AbortController }
@@ -25,6 +28,8 @@ const shared = (): Shared => {
   const store = globalThis as unknown as Record<symbol, Shared | undefined>
   return (store[Symbol.for(`opencode.${ID}`)] ??= { contexts: [], queue: [], timers: [] })
 }
+
+const MODULE = Symbol(ID)
 
 const number = (value: unknown, fallback: number) => (typeof value === "number" && value > 0 ? value : fallback)
 
@@ -70,6 +75,8 @@ function subscribe(state: Shared, ctx: Plugin.Context) {
 function start(state: Shared, ctx: Plugin.Context) {
   const store = open()
   state.store = store
+  state.module = MODULE
+  state.stopped = new AbortController()
   const apply = createIndexer(store)
   const current = () => state.contexts.at(-1) ?? ctx
   const { retentionDays, backfillDays } = settings(ctx.options)
@@ -94,13 +101,14 @@ function start(state: Shared, ctx: Plugin.Context) {
 
   state.timers.push(setInterval(() => void flush(), 1_000), setInterval(prune, DAY))
   prune()
-  void backfill(store, { days: backfillDays }).then(
+  void backfill(store, { days: backfillDays, signal: state.stopped.signal }).then(
     (result) => log({ event: "backfill", ...result }),
     (error) => log({ event: "error", where: "backfill", error: String(error) }),
   )
 }
 
 function stop(state: Shared) {
+  state.stopped?.abort()
   state.subscription?.controller.abort()
   state.subscription = undefined
   for (const timer of state.timers) clearInterval(timer)
@@ -119,6 +127,10 @@ export default Plugin.define({
     if (ctx.location.workspaceID !== undefined) return
 
     const state = shared()
+    if (state.module !== MODULE) {
+      stop(state)
+      state.contexts = []
+    }
     state.contexts.push(ctx)
     if (!state.store) start(state, ctx)
     const store = () => state.store!
@@ -192,8 +204,13 @@ export default Plugin.define({
           try {
             const result = await send(store(), peers, { sessionID, user: true, to, text: text.slice(to.length).trim() }, options())
             await log({ event: "post", from: "user", ...summary(result) })
-            const reached = result.delivered.map((entry) => `- ${entry.title || entry.id} (${entry.id}): ${entry.how}`)
-            await note(`Posted to ${result.board}.\n${reached.join("\n")}`, `peers · posted to ${result.board}`)
+            // Recipients show the post in their transcripts. Only say something when one of them didn't get it live.
+            const missed = result.delivered.filter((entry) => !["woken", "next step", "woken from the archive"].includes(entry.how))
+            if (missed.length)
+              await note(
+                missed.map((entry) => `- ${entry.title || entry.id} (${entry.id}): ${entry.how}`).join("\n"),
+                `peers · ${missed.length} of ${result.delivered.length} didn't get it live`,
+              )
           } catch (error) {
             await note(`Not sent: ${error instanceof Error ? error.message : String(error)}`, "peers · not sent")
           }
