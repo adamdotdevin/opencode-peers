@@ -1,0 +1,22 @@
+{
+  "name": "opencode-peers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lets OpenCode sessions find each other and talk.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsgo --noEmit"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "0.0.0-dev-1179",
+    "@types/bun": "^1.4.2",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2"
+  }
+}

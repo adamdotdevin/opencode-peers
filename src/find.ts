@@ -1,0 +1,223 @@
+import { repoOf } from "./repo.ts"
+import type { SessionRow, Store } from "./store.ts"
+
+export interface FindInput {
+  query?: string
+  all?: boolean
+  limit?: number
+}
+
+export interface Card {
+  id: string
+  title: string
+  state: "busy" | "idle" | "archived"
+  active: string
+  directory: string
+  branch?: string
+  sameRepo: boolean
+  /** Files you both wrote, or files matching the query. */
+  files?: string[]
+  snippet?: string
+  /** Subagents of this session that are running now. You can message them too. */
+  subagents?: { id: string; title: string }[]
+}
+
+export interface BoardCard {
+  id: string
+  members: { id: string; title: string }[]
+  last?: string
+}
+
+export interface FindOutput {
+  you: { id: string; title: string }
+  sessions: Card[]
+  boards: BoardCard[]
+}
+
+export const ago = (time: number, now = Date.now()) => {
+  const minutes = Math.max(0, Math.round((now - time) / 60_000))
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
+/** Words from free text, quoted so paths and punctuation never break FTS5 syntax. */
+export function terms(query: string) {
+  return (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []).map((word) => `"${word}"`)
+}
+
+interface Hit {
+  score: number
+  snippet?: string
+  files: Set<string>
+}
+
+const DAY = 86_400_000
+
+export function find(store: Store, callerID: string, input: FindInput, now = Date.now()): FindOutput {
+  const db = store.db
+  const limit = Math.min(Math.max(input.limit ?? 8, 1), 30)
+  const caller = store.session(callerID)
+  const callerRoot = caller?.root_id ?? callerID
+
+  const mine = db
+    .query<{ repo: string; rel: string }, [string]>("select distinct repo, rel from file where root_id = ? and repo != ''")
+    .all(callerRoot)
+  const mineKeys = new Set(mine.map((file) => `${file.repo}\0${file.rel}`))
+  const repos = new Set(mine.map((file) => file.repo))
+  const ownRepo = caller ? repoOf(caller.directory) : undefined
+  if (ownRepo) repos.add(ownRepo)
+
+  const hits = new Map<string, Hit>()
+  const hit = (root: string) => {
+    let entry = hits.get(root)
+    if (!entry) hits.set(root, (entry = { score: 0, files: new Set() }))
+    return entry
+  }
+  const matchedBoards = new Set<string>()
+
+  const query = input.query?.trim()
+  if (query) {
+    const words = terms(query)
+    const search = (match: string) => {
+      const docs = db
+        .query<{ root_id: string; kind: string; ref: string | null; score: number; snip: string }, [string]>(
+          `select root_id, kind, ref, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
+           from doc where doc match ? order by rank limit 300`,
+        )
+        .all(match)
+      const titles = db
+        .query<{ root_id: string; score: number }, [string]>(
+          `select s.root_id, bm25(title_fts) score from title_fts join session s on s.rowid = title_fts.rowid
+           where title_fts match ? order by rank limit 200`,
+        )
+        .all(match)
+      return { docs, titles }
+    }
+    let found = words.length ? search(words.join(" ")) : { docs: [], titles: [] }
+    if (words.length > 1 && found.docs.length + found.titles.length === 0) found = search(words.join(" OR "))
+
+    // A root's text score is the sum of its best three chunks.
+    const counted = new Map<string, number>()
+    for (const doc of found.docs) {
+      if (doc.kind === "post" && doc.ref) matchedBoards.add(doc.ref)
+      const seen = counted.get(doc.root_id) ?? 0
+      if (seen >= 3) continue
+      counted.set(doc.root_id, seen + 1)
+      const entry = hit(doc.root_id)
+      entry.score += -doc.score
+      entry.snippet ??= doc.snip
+    }
+    for (const title of found.titles) hit(title.root_id).score += -title.score * 3
+
+    if (/[/.]/.test(query)) {
+      const files = db
+        .query<{ root_id: string; rel: string }, [string]>(
+          "select root_id, rel from file where rel like '%' || ? || '%' order by time desc limit 300",
+        )
+        .all(query.replace(/^\.?\//, ""))
+      for (const file of files) {
+        const entry = hit(file.root_id)
+        if (entry.files.size === 0) entry.score += 10
+        entry.files.add(file.rel)
+      }
+    }
+  } else {
+    const recent = db
+      .query<{ id: string }, [number]>(
+        `select id from session where parent_id is null and (? or archived = 0) order by updated desc limit 200`,
+      )
+      .all(input.all ? 1 : 0)
+    for (const row of recent) hit(row.id)
+  }
+
+  const filesOf = db.query<{ repo: string; rel: string }, [string]>(
+    "select distinct repo, rel from file where root_id = ? order by time desc limit 500",
+  )
+  const latestBranch = db.query<{ branch: string | null }, [string]>(
+    "select branch from file where root_id = ? and branch is not null order by time desc limit 1",
+  )
+  const runningSubagents = db.query<{ id: string; title: string }, [string]>(
+    "select id, title from session where root_id = ? and id != root_id and busy = 1 order by updated desc limit 5",
+  )
+
+  const cards: { card: Card; rank: number[] }[] = []
+  for (const [root, entry] of hits) {
+    if (root === callerRoot) continue
+    const row = store.session(root)
+    if (!row || row.parent_id) continue
+    if (row.archived && !input.all) continue
+    const files = filesOf.all(root)
+    const overlap = files.filter((file) => mineKeys.has(`${file.repo}\0${file.rel}`)).map((file) => file.rel)
+    const sameRepo = files.some((file) => repos.has(file.repo)) || (repoOf(row.directory) ?? "\0") === ownRepo
+    const subagents = runningSubagents.all(root)
+    const busy = row.busy === 1 || subagents.length > 0
+    const card = toCard(row, {
+      busy,
+      sameRepo,
+      branch: latestBranch.get(root)?.branch ?? undefined,
+      files: overlap.length ? overlap.slice(0, 5) : [...entry.files].slice(0, 5),
+      snippet: entry.snippet,
+      subagents,
+      now,
+    })
+    const rank = query
+      ? [
+          entry.score *
+            0.5 ** ((now - row.updated) / DAY) *
+            (sameRepo ? 1.5 : 1) *
+            (busy ? 1.3 : 1) *
+            (overlap.length ? 2 : 1),
+        ]
+      : [overlap.length, sameRepo ? 1 : 0, busy ? 1 : 0, row.updated]
+    cards.push({ card, rank })
+  }
+  cards.sort((a, b) => {
+    for (let i = 0; i < a.rank.length; i++) if (a.rank[i] !== b.rank[i]) return b.rank[i]! - a.rank[i]!
+    return 0
+  })
+
+  const boardIDs = [...new Set([...store.boardsOf(callerID), ...matchedBoards])]
+  return {
+    you: { id: callerID, title: caller?.title ?? "" },
+    sessions: cards.slice(0, limit).map((entry) => entry.card),
+    boards: boardIDs.slice(0, 10).map((id) => boardCard(store, id, now)),
+  }
+}
+
+function toCard(
+  row: SessionRow,
+  extra: {
+    busy: boolean
+    sameRepo: boolean
+    branch?: string
+    files: string[]
+    snippet?: string
+    subagents: { id: string; title: string }[]
+    now: number
+  },
+): Card {
+  return {
+    id: row.id,
+    title: row.title,
+    state: row.archived ? "archived" : extra.busy ? "busy" : "idle",
+    active: ago(row.updated, extra.now),
+    directory: row.directory,
+    ...(extra.branch ? { branch: extra.branch } : {}),
+    sameRepo: extra.sameRepo,
+    ...(extra.files.length ? { files: extra.files } : {}),
+    ...(extra.snippet ? { snippet: extra.snippet } : {}),
+    ...(extra.subagents.length ? { subagents: extra.subagents } : {}),
+  }
+}
+
+export function boardCard(store: Store, id: string, now = Date.now()): BoardCard {
+  const last = store.lastPost(id)
+  return {
+    id,
+    members: store.members(id).map((member) => ({ id: member, title: store.session(member)?.title ?? "" })),
+    ...(last ? { last: `${last.from_title || last.from_id} (${ago(last.time, now)}): ${last.text.slice(0, 160)}` } : {}),
+  }
+}
