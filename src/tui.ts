@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { Peers, type ListOutput } from "./rpc.ts"
+import type { DialogSelectOption } from "@opencode/plugin/tui/context"
+import { Peers, type ListOutput, type PostOutput } from "./rpc.ts"
 
 type Target = { type: "board" | "session"; id: string; name: string; detail?: string }
 
@@ -21,16 +22,22 @@ export default Plugin.define({
           await context.client.session.prompt({ sessionID: target.id, text, delivery: "steer" })
           return context.ui.toast.show({ message: `Sent to ${target.name}`, variant: "success" })
         }
-        const { delivered } = (await peers().post({ board: target.id, text }, { location: location() })) as ListPost
+        const { delivered } = (await peers().post({ board: target.id, text }, { location: location() })) as PostOutput
+        const names = (entries: PostOutput["delivered"]) => entries.map((entry) => entry.title || entry.id).join(", ")
         const missed = delivered.filter((entry) => entry.how.startsWith("not delivered") || entry.how.startsWith("gone"))
-        if (missed.length === 0) return context.ui.toast.show({ message: `Sent to ${target.name}`, variant: "success" })
+        if (missed.length === 0) return context.ui.toast.show({ message: `Sent to ${names(delivered)}`, variant: "success" })
         context.ui.toast.show({
           title: `Sent, but ${missed.length} of ${delivered.length} didn't get it`,
-          message: missed.map((entry) => `${entry.title || entry.id}: ${entry.how}`).join("\n"),
+          message: names(missed),
           variant: "warning",
         })
       } catch (error) {
-        context.ui.toast.show({ title: "Not sent", message: error instanceof Error ? error.message : String(error), variant: "error" })
+        const message = (error as { message?: unknown } | undefined)?.message
+        context.ui.toast.show({
+          title: "Not sent",
+          ...(typeof message === "string" && message ? { message } : {}),
+          variant: "error",
+        } as { title: string; message: string; variant: "error" })
       }
     }
 
@@ -40,16 +47,17 @@ export default Plugin.define({
         { location: location() },
       )) as ListOutput
       if (boards.length + sessions.length === 0) return context.ui.toast.show({ message: "No sessions to message" })
-      const options = [
+      const options: DialogSelectOption<Target>[] = [
         ...sessions.map((session) => ({
           title: session.title,
-          description: `${session.where} · ${session.state === "busy" ? "working" : session.active}`,
+          description: session.where,
+          footer: session.state === "busy" ? "working" : session.active,
           category: "Sessions",
           value: { type: "session", id: session.id, name: session.title } as Target,
         })),
         ...boards.map((board) => ({
           title: board.members.join(", "),
-          description: board.last && `${board.last.active} · ${board.last.text}`,
+          footer: board.last?.active,
           category: "Groups",
           value: {
             type: "board",
@@ -59,13 +67,24 @@ export default Plugin.define({
           } as Target,
         })),
       ]
-      // Escape in the message goes back to the list; Escape in the list closes it.
+      // Matches the location too, so a repo or branch name finds its sessions.
+      const search = (query: string, list: readonly DialogSelectOption<Target>[]) => {
+        const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+        return list.filter((option) =>
+          words.every((word) => `${option.title} ${option.description ?? ""}`.toLowerCase().includes(word)),
+        )
+      }
+      // Escape in the message goes back to the list, on the row you came from; Escape in the list closes it.
+      let last: Target | undefined
       for (;;) {
-        const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
+        const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options, search, current: last })
         context.ui.dialog.set({ size: "large" })
         const target = await picked
         if (!target) return
-        const text = (await context.ui.dialog.prompt({ title: target.name, description: target.detail, placeholder: "Message" }))?.trim()
+        last = target
+        const asked = context.ui.dialog.prompt({ title: target.name, description: target.detail, placeholder: "Message" })
+        context.ui.dialog.set({ size: "large" })
+        const text = (await asked)?.trim()
         if (text) return deliver(target, text)
       }
     }
@@ -86,7 +105,7 @@ export default Plugin.define({
             const text = raw.slice(id.length).trim()
             if (!/^(brd|ses)_/.test(id) || !text)
               return context.ui.toast.show({ title: "Usage", message: "/peers <ses_… or brd_…> <message>" })
-            if (id.startsWith("brd_")) return void (await deliver({ type: "board", id, name: id }, text))
+            if (id.startsWith("brd_")) return void (await deliver({ type: "board", id, name: "" }, text))
             const session = await context.client.session.get({ sessionID: id }).catch(() => undefined)
             if (!session) return context.ui.toast.show({ message: `No session ${id}`, variant: "error" })
             await deliver({ type: "session", id, name: session.title || id }, text)
@@ -96,5 +115,3 @@ export default Plugin.define({
     }))
   },
 })
-
-type ListPost = { delivered: { id: string; title: string; how: string }[] }

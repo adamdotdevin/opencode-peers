@@ -431,6 +431,7 @@ describe("picker list", () => {
     expect(result.sessions.map((entry) => entry.title).sort()).toEqual(["Billing", "Gateway"])
     expect(result.sessions[0]!.where).toBe(path.basename(repo))
     expect(list(store, "ses_a", NOW).sessions.map((entry) => entry.id)).toEqual(["ses_b"])
+    expect(list(store, "ses_a", NOW).boards[0]!.members).toEqual(["Gateway"])
     apply({ type: "session.deleted", data: { sessionID: "ses_a" } })
     apply({ type: "session.deleted", data: { sessionID: "ses_b" } })
     expect(list(store, undefined, NOW).boards).toEqual([])

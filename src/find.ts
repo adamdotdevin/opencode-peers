@@ -62,7 +62,7 @@ const DAY = 86_400_000
 
 export function find(store: Store, callerID: string, input: FindInput, now = Date.now()): FindOutput {
   const db = store.db
-  const limit = Math.min(Math.max(input.limit ?? 8, 1), 30)
+  const limit = Math.min(Math.max(input.limit ?? 8, 1), 100)
   const caller = store.session(callerID)
   const callerRoot = caller?.root_id ?? callerID
 
@@ -246,6 +246,8 @@ export function boardCard(store: Store, id: string, now = Date.now()): BoardCard
 }
 
 const BOARDS = 5
+
+const clip = (text: string, limit: number) => (text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text)
 const DEFAULT_BRANCHES = new Set(["dev", "main", "master"])
 
 /** Where a session works, as the home screen shows it: the repo, plus its branch unless that's the default one. */
@@ -263,18 +265,21 @@ export function list(store: Store, sessionID = "", now = Date.now()): ListOutput
     .map((row) => row.board_id)
   const boards = [...new Set([...store.boardsOf(sessionID), ...recent])]
     .map((id) => {
-      const members = store.members(id).map((member) => store.session(member)?.title || member)
+      const members = store
+        .members(id)
+        .filter((member) => member !== sessionID)
+        .map((member) => store.session(member)?.title || member)
       const post = store.lastPost(id)
       const last = post && {
         from: post.from_id === "user" ? "You" : post.from_title || post.from_id,
         active: ago(post.time, now),
-        text: post.text.split("\n")[0]!,
+        text: clip(post.text.split("\n")[0]!, 120),
       }
       return { id, members, ...(last ? { last } : {}) }
     })
     .filter((board) => board.members.length > 0)
     .slice(0, BOARDS)
-  const sessions = find(store, sessionID, { limit: 30 }, now).sessions.map((card) => ({
+  const sessions = find(store, sessionID, { limit: 100 }, now).sessions.map((card) => ({
     id: card.id,
     title: card.title || "(untitled)",
     state: card.state,

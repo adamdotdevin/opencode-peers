@@ -210,6 +210,7 @@ export default Plugin.define({
       },
       post: async (input) => {
         const { board, text } = input as { board: string; text: string }
+        if (!store().boardExists(board)) throw new Error(`No group ${board}`)
         const result = await send(store(), peers, { sessionID: "user", user: true, to: board, text }, options())
         void log({ event: "post", from: "user", ...summary(result) }).catch(() => {})
         return { delivered: result.delivered }
