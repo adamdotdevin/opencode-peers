@@ -54,7 +54,6 @@ export function createIndexer(store: Store) {
           id,
           root_id: parent?.root_id ?? data.parentID ?? id,
           parent_id: data.parentID ?? null,
-          project_id: data.projectID ?? "",
           directory: data.location?.directory ?? "",
           title: "",
           busy: 0,
@@ -68,7 +67,7 @@ export function createIndexer(store: Store) {
         store.setTitle(id, data.title)
         return []
       case "session.moved":
-        store.patchSession(id, { directory: data.location?.directory, project_id: data.projectID, updated: time })
+        store.patchSession(id, { directory: data.location?.directory, updated: time })
         return []
       case "session.archived":
         store.patchSession(id, { archived: 1, busy: 0 })

@@ -50,6 +50,8 @@ export function terms(query: string) {
 
 interface Hit {
   score: number
+  /** The newest matching text, which says when the session last worked on this. */
+  time?: number
   snippet?: string
   files: Set<string>
 }
@@ -83,8 +85,8 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     const words = terms(query)
     const search = (match: string) => {
       const docs = db
-        .query<{ root_id: string; kind: string; ref: string | null; score: number; snip: string }, [string]>(
-          `select root_id, kind, ref, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
+        .query<{ root_id: string; kind: string; ref: string | null; time: number; score: number; snip: string }, [string]>(
+          `select root_id, kind, ref, time, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
            from doc where doc match ? order by rank limit 300`,
         )
         .all(match)
@@ -103,6 +105,8 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     const counted = new Map<string, number>()
     for (const doc of found.docs) {
       if (doc.kind === "post" && doc.ref) matchedBoards.add(doc.ref)
+      const matched = hit(doc.root_id)
+      matched.time = Math.max(matched.time ?? 0, doc.time)
       const seen = counted.get(doc.root_id) ?? 0
       if (seen >= 3) continue
       counted.set(doc.root_id, seen + 1)
@@ -154,7 +158,10 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     const sameRepo = files.some((file) => repos.has(file.repo)) || (repoOf(row.directory) ?? "\0") === ownRepo
     const subagents = runningSubagents.all(root)
     const busy = row.busy === 1 || subagents.length > 0
+    // Archiving bumps a session's updated time, so archived sessions age by their newest matching text instead.
+    const last = row.archived && entry.time ? entry.time : row.updated
     const card = toCard(row, {
+      last,
       busy,
       sameRepo,
       branch: latestBranch.get(root)?.branch ?? undefined,
@@ -166,7 +173,7 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     const rank = query
       ? [
           entry.score *
-            0.5 ** ((now - row.updated) / DAY) *
+            Math.max(0.2, 0.5 ** ((now - last) / (7 * DAY))) *
             (sameRepo ? 1.5 : 1) *
             (busy ? 1.3 : 1) *
             (overlap.length ? 2 : 1),
@@ -190,6 +197,7 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
 function toCard(
   row: SessionRow,
   extra: {
+    last: number
     busy: boolean
     sameRepo: boolean
     branch?: string
@@ -203,7 +211,7 @@ function toCard(
     id: row.id,
     title: row.title,
     state: row.archived ? "archived" : extra.busy ? "busy" : "idle",
-    active: ago(row.updated, extra.now),
+    active: ago(extra.last, extra.now),
     directory: row.directory,
     ...(extra.branch ? { branch: extra.branch } : {}),
     sameRepo: extra.sameRepo,

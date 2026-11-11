@@ -8,8 +8,6 @@ export interface Located {
   /** Path inside the worktree, or the absolute path outside git. */
   rel: string
   branch?: string
-  /** The worktree's root directory. */
-  root?: string
 }
 
 interface Checkout {
@@ -65,7 +63,6 @@ export function locate(file: string, base: string): Located {
     repo: found.repo,
     rel: path.relative(found.root, absolute),
     branch: branch(found.gitdir),
-    root: found.root,
   }
 }
 

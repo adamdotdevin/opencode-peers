@@ -11,7 +11,6 @@ export interface SessionRow {
   id: string
   root_id: string
   parent_id: string | null
-  project_id: string
   directory: string
   title: string
   busy: number
@@ -45,7 +44,6 @@ create table if not exists session (
   id text primary key,
   root_id text not null,
   parent_id text,
-  project_id text not null default '',
   directory text not null default '',
   title text not null default '',
   busy integer not null default 0,
@@ -117,10 +115,10 @@ export function createStore(db: Database) {
   const q = {
     session: db.query<SessionRow, [string]>("select * from session where id = ?"),
     upsertSession: db.query(
-      `insert into session (id, root_id, parent_id, project_id, directory, title, busy, archived, updated)
-       values ($id, $root_id, $parent_id, $project_id, $directory, $title, $busy, $archived, $updated)
+      `insert into session (id, root_id, parent_id, directory, title, busy, archived, updated)
+       values ($id, $root_id, $parent_id, $directory, $title, $busy, $archived, $updated)
        on conflict (id) do update set
-         root_id = excluded.root_id, parent_id = excluded.parent_id, project_id = excluded.project_id,
+         root_id = excluded.root_id, parent_id = excluded.parent_id,
          directory = excluded.directory, title = excluded.title, busy = excluded.busy,
          archived = excluded.archived, updated = max(session.updated, excluded.updated)`,
     ),
@@ -171,7 +169,6 @@ export function createStore(db: Database) {
         $id: row.id,
         $root_id: row.root_id,
         $parent_id: row.parent_id,
-        $project_id: row.project_id,
         $directory: row.directory,
         $title: row.title,
         $busy: row.busy,

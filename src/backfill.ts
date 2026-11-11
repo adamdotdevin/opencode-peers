@@ -14,7 +14,6 @@ export const openCodeDatabase = () =>
 interface Header {
   id: string
   parent_id: string | null
-  project_id: string
   directory: string
   title: string | null
   time_updated: number
@@ -27,7 +26,7 @@ interface Header {
 export function headers(source: Database, store: Store) {
   const rows = source
     .query<Header, []>(
-      "select id, parent_id, project_id, directory, title, time_updated, time_busy, time_idle, time_archived from session_v2",
+      "select id, parent_id, directory, title, time_updated, time_busy, time_idle, time_archived from session_v2",
     )
     .all()
   const parents = new Map(rows.map((row) => [row.id, row.parent_id]))
@@ -43,7 +42,6 @@ export function headers(source: Database, store: Store) {
         id: row.id,
         root_id: root(row.id),
         parent_id: row.parent_id,
-        project_id: row.project_id,
         directory: row.directory,
         title: existing?.title ?? "",
         busy: row.time_busy !== null && (row.time_idle === null || row.time_busy > row.time_idle) ? 1 : 0,

@@ -17,9 +17,10 @@ Agents get two tools in Code Mode, under `peers`:
 - A post to a board ID wakes its members, except archived ones. Archived members see the post if they run again.
 - Naming an archived session wakes it, as long as its directory still exists. If the directory is gone, `send` says so and the message isn't delivered.
 - A message for a subagent that has finished goes to its nearest live parent.
+- One send names at most 8 sessions.
 - A board accepts 20 posts per 10 minutes. After that, `send` fails and tells the agent to stop and report to you.
 
-The message reaches the model wrapped in a `<peer-message>` tag. The tag says who sent it and that it came from another session, not from you.
+The message reaches the model wrapped in a `<peer-message-…>` tag with a random suffix, so the text inside can't close the tag or fake another one. The tag says who sent it and that it came from another session, not from you.
 
 ## You
 
@@ -46,6 +47,8 @@ The index lives at `~/.local/share/opencode-peers/peers.db`. It's a SQLite datab
   ]
 }
 ```
+
+The first location to load the plugin starts the shared database and event feed, and the last one to unload stops them. Changes to the indexer take effect after `opencode service restart`; tool changes reload as usual.
 
 ## Develop
 

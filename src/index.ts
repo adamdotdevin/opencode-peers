@@ -13,8 +13,6 @@ export const ID = "peers"
 const DAY = 86_400_000
 
 interface Shared {
-  /** The module that started the shared state. A reload brings a new one, which restarts it with the new code. */
-  module?: symbol
   stopped?: AbortController
   store?: Store
   contexts: Plugin.Context[]
@@ -23,13 +21,13 @@ interface Shared {
   timers: ReturnType<typeof setInterval>[]
 }
 
-// The service loads one plugin instance per location. They share one database, event feed and index.
+// The service loads one plugin instance per location, each from its own copy of this module. They share one
+// database, event feed and index, started by the first and stopped by the last. Changes to the indexer need a
+// service restart; tool changes reload per location as usual.
 const shared = (): Shared => {
   const store = globalThis as unknown as Record<symbol, Shared | undefined>
   return (store[Symbol.for(`opencode.${ID}`)] ??= { contexts: [], queue: [], timers: [] })
 }
-
-const MODULE = Symbol(ID)
 
 const number = (value: unknown, fallback: number) => (typeof value === "number" && value > 0 ? value : fallback)
 
@@ -76,7 +74,6 @@ function subscribe(state: Shared, ctx: Plugin.Context) {
 function start(state: Shared, ctx: Plugin.Context) {
   const store = open()
   state.store = store
-  state.module = MODULE
   state.stopped = new AbortController()
   const apply = createIndexer(store)
   const current = () => state.contexts.at(-1) ?? ctx
@@ -84,23 +81,20 @@ function start(state: Shared, ctx: Plugin.Context) {
 
   subscribe(state, ctx)
 
-  let flushing = false
-  const flush = async () => {
-    if (flushing || state.queue.length === 0) return
-    flushing = true
+  const flush = () => {
+    if (state.queue.length === 0) return
     try {
       const batch = state.queue.splice(0)
       const written = store.transaction(() => batch.flatMap((event) => apply(event)))
-      if (written.length) await headsUp(store, api(current), written)
+      if (written.length)
+        void headsUp(store, api(current), written).catch((error) => log({ event: "error", where: "headsUp", error: String(error) }))
     } catch (error) {
-      await log({ event: "error", where: "flush", error: String(error) }).catch(() => {})
-    } finally {
-      flushing = false
+      void log({ event: "error", where: "flush", error: String(error) }).catch(() => {})
     }
   }
   const prune = () => store.prune(Date.now() - retentionDays * DAY)
 
-  state.timers.push(setInterval(() => void flush(), 1_000), setInterval(prune, DAY))
+  state.timers.push(setInterval(flush, 1_000), setInterval(prune, DAY))
   prune()
   void backfill(store, { days: backfillDays, signal: state.stopped.signal }).then(
     (result) => log({ event: "backfill", ...result }),
@@ -128,10 +122,6 @@ export default Plugin.define({
     if (ctx.location.workspaceID !== undefined) return
 
     const state = shared()
-    if (state.module !== MODULE) {
-      stop(state)
-      state.contexts = []
-    }
     state.contexts.push(ctx)
     if (!state.store) start(state, ctx)
     const store = () => state.store!
