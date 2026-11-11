@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Lets OpenCode sessions find each other and talk.",
+  "license": "MIT",
   "exports": {
     ".": "./src/index.ts"
   },
