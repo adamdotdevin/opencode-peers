@@ -102,7 +102,8 @@ export async function send(
   if (typeof input.to === "string" && input.to.startsWith("brd_")) {
     board = input.to
     if (!store.boardExists(board)) throw new Error(`No board ${board}. Use peers.find to list your boards.`)
-    joined = !store.isMember(board, sender)
+    // You post to a board from whichever session you're in, and that doesn't make the session a member.
+    joined = !input.user && !store.isMember(board, sender)
   } else {
     named = [...new Set(typeof input.to === "string" ? [input.to] : input.to)].filter((id) => id !== sender)
     if (named.length === 0) throw new Error("Send to another session's ID, a list of IDs, or a board ID (brd_…).")
@@ -128,7 +129,8 @@ export async function send(
   const title = input.user ? "the user" : from?.title || sender
   const history = joined ? store.recentPosts(board, HISTORY) : []
   store.addPost({ boardID: board, from: input.user ? "user" : sender, fromTitle: title, text, time: now })
-  store.addDoc({ text, sessionID: sender, rootID: from?.root_id ?? sender, kind: "post", ref: board, time: now })
+  const author = input.user ? "user" : sender
+  store.addDoc({ text, sessionID: author, rootID: input.user ? "user" : (from?.root_id ?? sender), kind: "post", ref: board, time: now })
 
   const members = store.members(board)
   const recipients = input.user ? members : members.filter((id) => id !== sender)
@@ -159,22 +161,21 @@ export async function send(
     reached.add(target.id)
 
     const archived = target.time.archived !== undefined
+    const busy = isBusy(target)
     let how: string
     let resume = true
-    if (archived) {
-      if (!named.includes(member)) {
-        resume = false
-        how = "queued: it's archived, so it sees this only if it runs again"
-      } else if (existsSync(target.location.directory)) how = "woken from the archive"
-      else {
-        delivered.push({
-          id: target.id,
-          title: target.title ?? "",
-          how: "not delivered: it's archived and its directory is gone. Use peers.find to read what it did",
-        })
-        continue
-      }
-    } else how = isBusy(target) ? "next step" : "woken"
+    if (archived && !named.includes(member)) {
+      resume = false
+      how = "queued: it's archived, so it sees this only if it runs again"
+    } else if (!busy && !existsSync(target.location.directory)) {
+      // A merged session's worktree is often removed before it's archived. Waking it would only fail the run.
+      delivered.push({
+        id: target.id,
+        title: target.title ?? "",
+        how: "not delivered: its directory is gone. Use peers.find to read what it did",
+      })
+      continue
+    } else how = archived ? "woken from the archive" : busy ? "next step" : "woken"
 
     await api.synthetic({
       sessionID: target.id,
@@ -204,7 +205,8 @@ export async function send(
 }
 
 const historyEntry = (post: PostRow, now: number) => ({
-  from: post.from_title || post.from_id,
+  from: post.from_id,
+  ...(post.from_id === "user" ? {} : { title: post.from_title }),
   text: post.text,
   time: ago(post.time, now),
 })

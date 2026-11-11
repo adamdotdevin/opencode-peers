@@ -67,6 +67,12 @@ export function locate(file: string, base: string): Located {
   }
 }
 
+/** The branch checked out in the worktree holding a directory, if any. */
+export function branchOf(directory: string) {
+  const found = checkout(directory)
+  return found ? branch(found.gitdir) : undefined
+}
+
 /** The repo a directory belongs to, if any. */
 export const repoOf = (directory: string) => checkout(directory)?.repo
 

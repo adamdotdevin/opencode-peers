@@ -1,10 +1,12 @@
 import { Plugin } from "@opencode/plugin"
+import { readdirSync, readFileSync } from "node:fs"
 import { appendFile, mkdir } from "node:fs/promises"
 import path from "node:path"
 import { backfill } from "./backfill.ts"
 import { find, type FindOutput } from "./find.ts"
 import { createIndexer, EVENT_TYPES, WRITE, WRITE_TOOLS, type Event } from "./indexer.ts"
 import { headsUp } from "./overlap.ts"
+import { findOutput, sendOutput } from "./schema.ts"
 import { send, type Api, type SendOutput } from "./send.ts"
 import { dataDirectory, open, type Store } from "./store.ts"
 
@@ -13,13 +15,20 @@ export const ID = "peers"
 const DAY = 86_400_000
 
 /**
- * Bump when the shared runtime changes (indexer, event types, store), so a reload replaces the running one. A
- * constant rather than a per-module value, because every location imports its own copy of this module.
+ * A hash of this plugin's source, so editing any file replaces the running shared state on the next reload. Every
+ * location imports its own copy of the module, and the same files give every copy the same hash.
  */
-const RUNTIME = 2
+const RUNTIME = String(
+  Bun.hash(
+    readdirSync(import.meta.dir)
+      .sort()
+      .map((file) => readFileSync(path.join(import.meta.dir, file), "utf8"))
+      .join("\0"),
+  ),
+)
 
 interface Shared {
-  runtime?: number
+  runtime?: string
   stopped?: AbortController
   store?: Store
   contexts: Plugin.Context[]
@@ -120,8 +129,6 @@ function stop(state: Shared) {
   state.store = undefined
 }
 
-const json = (value: unknown) => ({ content: JSON.stringify(value, null, 1) })
-
 export default Plugin.define({
   id: ID,
   async setup(ctx) {
@@ -161,9 +168,11 @@ export default Plugin.define({
           },
           additionalProperties: false,
         },
+        output: findOutput,
         options: { namespace: "peers", codemode: true, pinned: true },
-        execute: async (input, context) =>
-          json(find(store(), context.sessionID, (input ?? {}) as { query?: string; all?: boolean; limit?: number })),
+        execute: async (input, context) => ({
+          output: find(store(), context.sessionID, (input ?? {}) as { query?: string; all?: boolean; limit?: number }),
+        }),
       })
       editor.add({
         name: "send",
@@ -181,12 +190,13 @@ export default Plugin.define({
           required: ["to", "text"],
           additionalProperties: false,
         },
+        output: sendOutput,
         options: { namespace: "peers", codemode: true, pinned: true },
         execute: async (input, context) => {
           const { to, text } = input as { to: string | string[]; text: string }
           const result = await send(store(), peers, { sessionID: context.sessionID, to, text }, options())
-          await log({ event: "post", from: context.sessionID, ...summary(result) })
-          return json(result)
+          void log({ event: "post", from: context.sessionID, ...summary(result) }).catch(() => {})
+          return { output: result }
         },
       })
     })
@@ -208,7 +218,7 @@ export default Plugin.define({
             return void (await note("Usage: /peers <brd_… or ses_…> <message>, or /peers alone to see this session's boards.", "peers · usage"))
           try {
             const result = await send(store(), peers, { sessionID, user: true, to, text: text.slice(to.length).trim() }, options())
-            await log({ event: "post", from: "user", ...summary(result) })
+            void log({ event: "post", from: "user", ...summary(result) }).catch(() => {})
             // Recipients show the post in their transcripts. Only say something when one of them didn't get it live.
             const missed = result.delivered.filter((entry) => !["woken", "next step", "woken from the archive"].includes(entry.how))
             if (missed.length)

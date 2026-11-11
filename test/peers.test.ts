@@ -144,6 +144,24 @@ describe("send", () => {
     expect(api.sent.at(-1)!.resume).toBe(false)
   })
 
+  test("an idle session whose directory is gone isn't woken, even unarchived", async () => {
+    const api = fake([session("ses_a"), session("ses_merged", { location: { directory: "/nonexistent/peers-wt" } })])
+    const result = await send(store, api, { sessionID: "ses_a", to: "ses_merged", text: "still there?" }, options)
+    expect(result.delivered[0]!.how).toStartWith("not delivered: its directory is gone")
+    expect(api.sent).toHaveLength(0)
+  })
+
+  test("posting to a board as the user doesn't join the session it was typed in", async () => {
+    const api = fake([session("ses_a"), session("ses_b"), session("ses_other")])
+    const { board } = await send(store, api, { sessionID: "ses_a", to: "ses_b", text: "hi" }, options)
+    const result = await send(store, api, { sessionID: "ses_other", user: true, to: board, text: "hold off" }, options)
+    expect(store.members(board)).not.toContain("ses_other")
+    expect(result.delivered.map((entry) => entry.id).sort()).toEqual(["ses_a", "ses_b"])
+    const joined = await send(store, api, { sessionID: "ses_other", to: board, text: "joining" }, options)
+    expect(joined.history?.map((post) => post.from)).toEqual(["ses_a", "user"])
+    expect(joined.history?.[1]).not.toHaveProperty("title")
+  })
+
   test("deleted members leave the board", async () => {
     const api = fake([session("ses_a"), session("ses_b"), session("ses_c")])
     const { board } = await send(store, api, { sessionID: "ses_a", to: ["ses_b", "ses_c"], text: "hi" }, options)
@@ -358,6 +376,28 @@ describe("find", () => {
       apply({ type: "session.archived", data: { sessionID: `ses_old${i}` } })
     }
     expect(find(store, "ses_me", { query: "gateway pool" }, NOW).sessions.map((card) => card.id)).toEqual(["ses_live"])
+  })
+
+  test("path queries skip archived writers", () => {
+    created("ses_me")
+    created("ses_live")
+    wrote("ses_live", "src/index.ts")
+    for (let i = 0; i < 400; i++) {
+      created(`ses_w${i}`)
+      wrote(`ses_w${i}`, "src/index.ts", NOW + i + 1)
+      apply({ type: "session.archived", data: { sessionID: `ses_w${i}` } })
+    }
+    expect(find(store, "ses_me", { query: "src/index.ts" }, NOW).sessions.map((card) => card.id)).toEqual(["ses_live"])
+  })
+
+  test("a board still matches when the poster is archived", async () => {
+    const api = fake([session("ses_c"), session("ses_d")])
+    created("ses_me")
+    created("ses_c")
+    created("ses_d")
+    const { board } = await send(store, api, { sessionID: "ses_c", to: "ses_d", text: "migrating the ledger table" }, { postsPer10Min: 20, now: NOW })
+    apply({ type: "session.archived", data: { sessionID: "ses_c" } })
+    expect(find(store, "ses_me", { query: "ledger" }, NOW).boards.map((entry) => entry.id)).toEqual([board])
   })
 
   test("odd queries never break FTS syntax", () => {

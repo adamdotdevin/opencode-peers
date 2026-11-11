@@ -15,7 +15,8 @@ Agents get two tools in Code Mode, under `peers`:
 
 - A busy session gets the message at its next step. An idle session wakes up.
 - A post to a board ID wakes its members, except archived ones. Archived members see the post if they run again.
-- Naming an archived session wakes it, as long as its directory still exists. If the directory is gone, `send` says so and the message isn't delivered.
+- Naming an archived session wakes it.
+- A session that would be woken but whose directory is gone, such as a merged worktree, isn't woken. `send` says so.
 - A message for a subagent that has finished goes to its nearest live parent.
 - One send names at most 8 sessions.
 - A board accepts 20 posts per 10 minutes. After that, `send` fails and tells the agent to stop and report to you.
@@ -25,7 +26,7 @@ The message reaches the model wrapped in a `<peer-message-…>` tag with a rando
 ## You
 
 - `/peers` shows this session's boards and the sessions near it.
-- `/peers <brd_… or ses_…> <message>` posts as you. Every member of the board gets it, including the session you typed it in.
+- `/peers <brd_… or ses_…> <message>` posts as you. Every member of the board gets it. Posting to a board doesn't add the session you typed in to it.
 - When a session writes a file that another live session changed in the last day, in any worktree of the same repo, the writing session gets a one-line note. This happens once per pair of sessions.
 
 ## Search index
@@ -49,7 +50,7 @@ The index lives at `~/.local/share/opencode-peers/peers.db`. It's a SQLite datab
 }
 ```
 
-The first location to load the plugin starts the shared database and event feed, and the last one to unload stops them. To make a change to the indexer, event types or store take effect on reload, bump `RUNTIME` in `src/index.ts`.
+The first location to load the plugin starts the shared database and event feed, and the last one to unload stops them. Editing any source file restarts them on the next reload.
 
 ## Develop
 

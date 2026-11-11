@@ -1,4 +1,4 @@
-import { repoOf } from "./repo.ts"
+import { branchOf, repoOf } from "./repo.ts"
 import type { SessionRow, Store } from "./store.ts"
 
 export interface FindInput {
@@ -92,8 +92,9 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
           [string, string, number]
         >(
           `select doc.root_id, doc.kind, doc.ref, doc.time, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
-           from doc join session r on r.id = doc.root_id
-           where doc match ? and doc.root_id != ? and (? or r.archived = 0) order by score limit 300`,
+           from doc left join session r on r.id = doc.root_id
+           where doc match ? and (doc.kind = 'post' or (doc.root_id != ? and (? or r.archived = 0)))
+           order by score limit 300`,
         )
         .all(match, callerRoot, all)
       const titles = db
@@ -112,6 +113,7 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     const counted = new Map<string, number>()
     for (const doc of found.docs) {
       if (doc.kind === "post" && doc.ref) matchedBoards.add(doc.ref)
+      if (doc.kind === "post") continue
       const matched = hit(doc.root_id)
       matched.time = Math.max(matched.time ?? 0, doc.time)
       const seen = counted.get(doc.root_id) ?? 0
@@ -125,10 +127,11 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
 
     if (/[/.]/.test(query)) {
       const files = db
-        .query<{ root_id: string; rel: string }, [string]>(
-          "select root_id, rel from file where rel like '%' || ? || '%' order by time desc limit 300",
+        .query<{ root_id: string; rel: string }, [string, number, string]>(
+          `select f.root_id, f.rel from file f join session r on r.id = f.root_id
+           where f.root_id != ? and (? or r.archived = 0) and f.rel like '%' || ? || '%' order by f.time desc limit 300`,
         )
-        .all(query.replace(/^\.?\//, ""))
+        .all(callerRoot, all, query.replace(/^\.?\//, ""))
       for (const file of files) {
         const entry = hit(file.root_id)
         if (entry.files.size === 0) entry.score += 10
@@ -171,7 +174,7 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
       last,
       busy,
       sameRepo,
-      branch: latestBranch.get(root)?.branch ?? undefined,
+      branch: latestBranch.get(root)?.branch ?? branchOf(row.directory),
       files: overlap.length ? overlap.slice(0, 5) : [...entry.files].slice(0, 5),
       snippet: entry.snippet,
       subagents,
@@ -228,11 +231,14 @@ function toCard(
   }
 }
 
+const who = (post: { from_id: string; from_title: string }) =>
+  post.from_id === "user" ? "user" : `${post.from_title || post.from_id} (${post.from_id})`
+
 export function boardCard(store: Store, id: string, now = Date.now()): BoardCard {
   const last = store.lastPost(id)
   return {
     id,
     members: store.members(id).map((member) => ({ id: member, title: store.session(member)?.title ?? "" })),
-    ...(last ? { last: `${last.from_title || last.from_id} (${ago(last.time, now)}): ${last.text.slice(0, 160)}` } : {}),
+    ...(last ? { last: `${who(last)} (${ago(last.time, now)}): ${last.text.slice(0, 160)}` } : {}),
   }
 }

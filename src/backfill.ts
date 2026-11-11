@@ -78,13 +78,18 @@ export async function content(
     .map((row) => row.id)
     .filter((id) => !done.has(id))
   const mark = store.db.query("update session set backfilled = 1 where id = ?")
-  const messages = source.query<Message, [string, number, number, string, number, number]>(
+  const messages = source.query<Message, [string, number, number]>(
+    // One type per branch and +time_created, so SQLite walks session_message_session_type_seq_idx backwards and stops
+    // at the limit, rather than reading the whole session into a sort.
     `select type, time_created, data from (
        select type, seq, time_created, data from session_message
-       where session_id = ? and type in ('user', 'compaction') and time_created between ? and ? order by seq desc limit 20
+       where session_id = ?1 and type = 'user' and +time_created between ?2 and ?3 order by seq desc limit 20
      ) union all select type, time_created, data from (
        select type, seq, time_created, data from session_message
-       where session_id = ? and type = 'assistant' and time_created between ? and ? order by seq desc limit 25
+       where session_id = ?1 and type = 'compaction' and +time_created between ?2 and ?3 order by seq desc limit 5
+     ) union all select type, time_created, data from (
+       select type, seq, time_created, data from session_message
+       where session_id = ?1 and type = 'assistant' and +time_created between ?2 and ?3 order by seq desc limit 25
      )`,
   )
   // Each slice blocks the shared service while it parses, so keep it to a few sessions.
@@ -95,7 +100,7 @@ export async function content(
       for (const id of ids.slice(start, start + slice)) {
         const session = store.session(id)
         if (!session) continue
-        for (const message of messages.all(id, options.since, options.until, id, options.since, options.until))
+        for (const message of messages.all(id, options.since, options.until))
           indexMessage(store, session, message)
         mark.run(id)
       }
