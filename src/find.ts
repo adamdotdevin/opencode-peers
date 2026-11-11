@@ -256,7 +256,7 @@ export function list(store: Store, sessionID = "", now = Date.now()): ListOutput
     const post = store.lastPost(id)
     const last = post && `${post.from_id === "user" ? "You" : post.from_title || post.from_id}, ${ago(post.time, now)}: ${post.text.split("\n")[0]}`
     return { id, members, ...(last ? { last } : {}) }
-  })
+  }).filter((board) => board.members.length > 0)
   const sessions = find(store, sessionID, { limit: 30 }, now).sessions.map((card) => ({
     id: card.id,
     title: card.title || "(untitled)",

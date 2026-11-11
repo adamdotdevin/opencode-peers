@@ -428,6 +428,9 @@ describe("picker list", () => {
     expect(result.boards).toEqual([{ id: board, members: ["Billing", "Gateway"], last: "You, 1m ago: hold off" }])
     expect(result.sessions.map((entry) => entry.title).sort()).toEqual(["Billing", "Gateway"])
     expect(list(store, "ses_a", NOW).sessions.map((entry) => entry.id)).toEqual(["ses_b"])
+    apply({ type: "session.deleted", data: { sessionID: "ses_a" } })
+    apply({ type: "session.deleted", data: { sessionID: "ses_b" } })
+    expect(list(store, undefined, NOW).boards).toEqual([])
   })
 })
 

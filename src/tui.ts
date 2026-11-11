@@ -55,7 +55,9 @@ export default Plugin.define({
           value: { type: "session", id: session.id, name: session.title, detail: session.where } as Target,
         })),
       ]
-      const target = await context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
+      const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
+      context.ui.dialog.set({ size: "large" })
+      const target = await picked
       if (!target) return
       const text = await context.ui.dialog.prompt({ title: target.name, description: target.detail })
       if (text?.trim()) await deliver(target, text.trim())
