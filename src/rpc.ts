@@ -57,6 +57,9 @@ export const Peers = Rpc.define({
         },
         required: ["delivered"],
       },
+      errors: {
+        not_found: { type: "object", properties: { board: text }, required: ["board"], additionalProperties: false },
+      },
     },
   },
   events: {},

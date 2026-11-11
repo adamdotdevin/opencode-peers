@@ -67,17 +67,10 @@ export default Plugin.define({
           } as Target,
         })),
       ]
-      // Matches the location too, so a repo or branch name finds its sessions.
-      const search = (query: string, list: readonly DialogSelectOption<Target>[]) => {
-        const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-        return list.filter((option) =>
-          words.every((word) => `${option.title} ${option.description ?? ""}`.toLowerCase().includes(word)),
-        )
-      }
       // Escape in the message goes back to the list, on the row you came from; Escape in the list closes it.
       let last: Target | undefined
       for (;;) {
-        const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options, search, current: last })
+        const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options, current: last })
         context.ui.dialog.set({ size: "large" })
         const target = await picked
         if (!target) return
