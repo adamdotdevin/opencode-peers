@@ -122,7 +122,7 @@ export async function send(
       `${board} has had ${options.postsPer10Min} posts in the last 10 minutes, which looks like a loop. Stop messaging it and tell the user what you were trying to coordinate.`,
     )
 
-  const from = store.session(sender) ?? (await api.get(sender).then((session) => session && toRow(session)))
+  const from = store.session(sender)
   const title = input.user ? "the user" : from?.title || sender
   const history = joined ? store.recentPosts(board, HISTORY) : []
   store.addPost({ boardID: board, from: input.user ? "user" : sender, fromTitle: title, text, time: now })
@@ -201,10 +201,4 @@ const historyEntry = (post: PostRow, now: number) => ({
   from: post.from_title || post.from_id,
   text: post.text,
   time: ago(post.time, now),
-})
-
-const toRow = (session: Session) => ({
-  title: session.title ?? "",
-  directory: session.location.directory,
-  root_id: session.id,
 })

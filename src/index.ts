@@ -54,7 +54,8 @@ const api = (current: () => Plugin.Context): Api => ({
       .then(
         (session) => session,
         (error) => {
-          if (error?._tag === "SessionNotFoundError") return undefined
+          // In process, the core error arrives as is: "Session.NotFoundError", not the HTTP "SessionNotFoundError".
+          if (error?._tag === "Session.NotFoundError") return undefined
           throw error
         },
       ),
