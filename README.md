@@ -25,8 +25,9 @@ The message reaches the model wrapped in a `<peer-message-…>` tag with a rando
 
 ## You
 
-- `/peers` shows this session's boards and the sessions near it.
-- `/peers <brd_… or ses_…> <message>` posts as you. Every member of the board gets it. Posting to a board doesn't add the session you typed in to it.
+- `/peers` in the TUI opens a picker of boards with recent posts and the live sessions near you. Pick one, type the message, and it's sent.
+- A message to a session arrives as a prompt from you, as if you'd typed it there. A board post reaches every member, marked as from you, and doesn't add the session you're in to the board.
+- `/peers <brd_… or ses_…> <message>` sends without the picker.
 - When a session writes a file that another live session changed in the last day, in any worktree of the same repo, the writing session gets a one-line note. This happens once per pair of sessions.
 
 ## Search index

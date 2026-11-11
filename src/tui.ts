@@ -52,7 +52,7 @@ export default Plugin.define({
           title: session.title,
           description: `${session.where} · ${session.state === "busy" ? "working" : session.active}`,
           category: "Sessions",
-          value: { type: "session", id: session.id, name: session.title, detail: session.where } as Target,
+          value: { type: "session", id: session.id, name: session.title } as Target,
         })),
       ]
       const picked = context.ui.dialog.select({ title: "Message", placeholder: "Search", options })
@@ -79,8 +79,10 @@ export default Plugin.define({
             const text = raw.slice(id.length).trim()
             if (!/^(brd|ses)_/.test(id) || !text)
               return context.ui.toast.show({ message: "Use /peers on its own to pick, or /peers <brd_… or ses_…> <message>" })
-            const name = id.startsWith("ses_") ? (context.data.session.get(id)?.title ?? id) : id
-            await deliver({ type: id.startsWith("ses_") ? "session" : "board", id, name }, text)
+            if (id.startsWith("brd_")) return void (await deliver({ type: "board", id, name: id }, text))
+            const session = await context.client.session.get({ sessionID: id }).catch(() => undefined)
+            if (!session) return context.ui.toast.show({ message: `No session ${id}`, variant: "error" })
+            await deliver({ type: "session", id, name: session.title || id }, text)
           },
         },
       ],
