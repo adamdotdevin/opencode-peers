@@ -78,23 +78,25 @@ export async function content(
     .map((row) => row.id)
     .filter((id) => !done.has(id))
   const mark = store.db.query("update session set backfilled = 1 where id = ?")
-  const messages = source.query<Message, [string, number, string, number, number]>(
+  const messages = source.query<Message, [string, number, number, string, number, number]>(
     `select type, time_created, data from (
        select type, seq, time_created, data from session_message
-       where session_id = ? and type in ('user', 'compaction') and time_created < ? order by seq desc limit 20
+       where session_id = ? and type in ('user', 'compaction') and time_created between ? and ? order by seq desc limit 20
      ) union all select type, time_created, data from (
        select type, seq, time_created, data from session_message
-       where session_id = ? and type = 'assistant' and time_created < ? order by seq desc limit ?
+       where session_id = ? and type = 'assistant' and time_created between ? and ? order by seq desc limit 25
      )`,
   )
-  const slice = options.slice ?? 50
+  // Each slice blocks the shared service while it parses, so keep it to a few sessions.
+  const slice = options.slice ?? 10
   for (let start = 0; start < ids.length; start += slice) {
     if (options.signal?.aborted) return start
     store.transaction(() => {
       for (const id of ids.slice(start, start + slice)) {
         const session = store.session(id)
         if (!session) continue
-        for (const message of messages.all(id, options.until, id, options.until, 25)) indexMessage(store, session, message)
+        for (const message of messages.all(id, options.since, options.until, id, options.since, options.until))
+          indexMessage(store, session, message)
         mark.run(id)
       }
     })
@@ -119,7 +121,7 @@ function indexMessage(store: Store, session: { id: string; root_id: string; dire
   if (message.type === "compaction") return add(data.summary, "summary", PROMPT_LIMIT)
   for (const part of data.content ?? []) {
     if (part.type === "text") add(part.text, "text", TEXT_LIMIT)
-    if (part.type === "tool" && part.state?.input) recordWrites(store, session, part.name, part.state.input, message.time_created)
+    if (part.type === "tool" && part.state?.status === "completed" && part.state.input) recordWrites(store, session, part.name, part.state.input, message.time_created)
   }
 }
 

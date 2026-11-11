@@ -102,10 +102,7 @@ export async function send(
   if (typeof input.to === "string" && input.to.startsWith("brd_")) {
     board = input.to
     if (!store.boardExists(board)) throw new Error(`No board ${board}. Use peers.find to list your boards.`)
-    if (!store.isMember(board, sender)) {
-      store.addMember(board, sender, now)
-      joined = true
-    }
+    joined = !store.isMember(board, sender)
   } else {
     named = [...new Set(typeof input.to === "string" ? [input.to] : input.to)].filter((id) => id !== sender)
     if (named.length === 0) throw new Error("Send to another session's ID, a list of IDs, or a board ID (brd_…).")
@@ -126,6 +123,7 @@ export async function send(
       `${board} has had ${options.postsPer10Min} posts in the last 10 minutes, which looks like a loop. Stop messaging it and tell the user what you were trying to coordinate.`,
     )
 
+  if (joined) store.addMember(board, sender, now)
   const from = store.session(sender)
   const title = input.user ? "the user" : from?.title || sender
   const history = joined ? store.recentPosts(board, HISTORY) : []

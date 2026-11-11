@@ -3,7 +3,7 @@ import { appendFile, mkdir } from "node:fs/promises"
 import path from "node:path"
 import { backfill } from "./backfill.ts"
 import { find, type FindOutput } from "./find.ts"
-import { createIndexer, EVENT_TYPES, type Event } from "./indexer.ts"
+import { createIndexer, EVENT_TYPES, WRITE, WRITE_TOOLS, type Event } from "./indexer.ts"
 import { headsUp } from "./overlap.ts"
 import { send, type Api, type SendOutput } from "./send.ts"
 import { dataDirectory, open, type Store } from "./store.ts"
@@ -12,7 +12,14 @@ export const ID = "peers"
 
 const DAY = 86_400_000
 
+/**
+ * Bump when the shared runtime changes (indexer, event types, store), so a reload replaces the running one. A
+ * constant rather than a per-module value, because every location imports its own copy of this module.
+ */
+const RUNTIME = 2
+
 interface Shared {
+  runtime?: number
   stopped?: AbortController
   store?: Store
   contexts: Plugin.Context[]
@@ -22,8 +29,7 @@ interface Shared {
 }
 
 // The service loads one plugin instance per location, each from its own copy of this module. They share one
-// database, event feed and index, started by the first and stopped by the last. Changes to the indexer need a
-// service restart; tool changes reload per location as usual.
+// database, event feed and index, started by the first and stopped by the last.
 const shared = (): Shared => {
   const store = globalThis as unknown as Record<symbol, Shared | undefined>
   return (store[Symbol.for(`opencode.${ID}`)] ??= { contexts: [], queue: [], timers: [] })
@@ -74,6 +80,7 @@ function subscribe(state: Shared, ctx: Plugin.Context) {
 function start(state: Shared, ctx: Plugin.Context) {
   const store = open()
   state.store = store
+  state.runtime = RUNTIME
   state.stopped = new AbortController()
   const apply = createIndexer(store)
   const current = () => state.contexts.at(-1) ?? ctx
@@ -122,11 +129,18 @@ export default Plugin.define({
     if (ctx.location.workspaceID !== undefined) return
 
     const state = shared()
+    if (state.runtime !== RUNTIME) stop(state)
     state.contexts.push(ctx)
     if (!state.store) start(state, ctx)
     const store = () => state.store!
     const peers = api(() => ctx)
     const options = () => settings(ctx.options)
+
+    // Successful writes only: a rejected or failed edit didn't change the file.
+    await ctx.tool.hook("execute.after", (event) => {
+      if (event.status === "completed" && WRITE_TOOLS.has(event.tool) && state.store)
+        state.queue.push({ type: WRITE, data: { sessionID: event.sessionID, tool: event.tool, input: event.input } })
+    })
 
     await ctx.tool.transform((editor) => {
       editor.namespace({
@@ -137,7 +151,7 @@ export default Plugin.define({
       editor.add({
         name: "find",
         description:
-          "Find other sessions to coordinate with. With no query, lists live sessions near you: ones that changed the same files first, then ones in the same repo, then busy ones. With a query (a feature, file path, identifier or branch), searches their titles, prompts, replies and changed files. all: true includes archived sessions, for finding who built something. Also returns your own session ID and your boards. Check it before changing shared code, or when the user mentions another session's work.",
+          "Find other sessions to coordinate with. With no query, lists live sessions near you: ones that changed the same files first, then ones in the same repo, then busy ones. With a query (a feature, file path or identifier), searches their titles, prompts, replies and changed files. all: true includes archived sessions, for finding who built something. Also returns your own session ID and your boards. Check it before changing shared code, or when the user mentions another session's work.",
         input: {
           type: "object",
           properties: {

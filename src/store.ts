@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { mkdirSync } from "node:fs"
+import { chmodSync, mkdirSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -100,7 +100,11 @@ create table if not exists notified (a text not null, b text not null, primary k
 `
 
 export function open(file = path.join(dataDirectory(), "peers.db")) {
-  if (file !== ":memory:") mkdirSync(path.dirname(file), { recursive: true })
+  // The index copies transcripts out of OpenCode's owner-only database, so it stays owner-only too.
+  if (file !== ":memory:") {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    chmodSync(path.dirname(file), 0o700)
+  }
   const db = new Database(file, { create: true })
   db.run("pragma journal_mode = wal")
   db.run("pragma synchronous = normal")
@@ -130,7 +134,7 @@ export function createStore(db: Database) {
     ),
     insertFile: db.query(
       `insert into file (session_id, root_id, repo, rel, branch, time) values (?, ?, ?, ?, ?, ?)
-       on conflict do update set branch = excluded.branch, time = excluded.time`,
+       on conflict do update set branch = excluded.branch, time = excluded.time where excluded.time >= file.time`,
     ),
     boardsOf: db.query<{ board_id: string }, [string]>("select board_id from member where session_id = ?"),
     members: db.query<{ session_id: string }, [string]>(
@@ -182,12 +186,14 @@ export function createStore(db: Database) {
       if (!current) return
       this.upsertSession({ ...current, ...patch })
     },
+    /**
+     * Its text and files stay until retention prunes them: deleting from the text index scans all of it, and a
+     * deleted tree emits one event per subagent. find skips roots that are gone.
+     */
     removeSession(id: string) {
       const rowid = q.rowid.get(id)?.rowid
       if (rowid !== undefined) q.deleteTitle.run(rowid)
       db.query("delete from session where id = ?").run(id)
-      db.query("delete from doc where session_id = ?").run(id)
-      db.query("delete from file where session_id = ?").run(id)
       db.query("delete from member where session_id = ?").run(id)
     },
     setTitle(id: string, title: string) {

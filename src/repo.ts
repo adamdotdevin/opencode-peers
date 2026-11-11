@@ -28,7 +28,8 @@ function checkout(directory: string): Checkout | null {
     else {
       // A linked worktree: ".git" is a file pointing at <repo>/.git/worktrees/<name>.
       const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotgit, "utf8"))
-      if (match) {
+      // A worktree whose repo was deleted counts as outside git.
+      if (match && existsSync(path.resolve(directory, match[1]!.trim()))) {
         const gitdir = path.resolve(directory, match[1]!.trim())
         const common = path.join(gitdir, "commondir")
         const repo = existsSync(common)

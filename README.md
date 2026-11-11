@@ -34,6 +34,7 @@ The index lives at `~/.local/share/opencode-peers/peers.db`. It's a SQLite datab
 
 - It stores prompts, assistant text, compaction summaries, board posts and the paths of files written with `edit`, `write` and `patch`.
 - It skips tool output, file contents and reasoning.
+- The directory is owner-only, like OpenCode's own database.
 - On first start, it backfills the last 30 days from `~/.local/share/opencode/opencode.db`, read-only. That took under a minute for 5,700 sessions and made a 73 MB index.
 
 `log.jsonl` in the same directory has a line for every post.
@@ -48,7 +49,7 @@ The index lives at `~/.local/share/opencode-peers/peers.db`. It's a SQLite datab
 }
 ```
 
-The first location to load the plugin starts the shared database and event feed, and the last one to unload stops them. Changes to the indexer take effect after `opencode service restart`; tool changes reload as usual.
+The first location to load the plugin starts the shared database and event feed, and the last one to unload stops them. To make a change to the indexer, event types or store take effect on reload, bump `RUNTIME` in `src/index.ts`.
 
 ## Develop
 

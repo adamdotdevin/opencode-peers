@@ -83,19 +83,26 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
   const query = input.query?.trim()
   if (query) {
     const words = terms(query)
+    // Only sessions find can return count toward the limits, so archived text can't crowd out live sessions.
+    const all = input.all ? 1 : 0
     const search = (match: string) => {
       const docs = db
-        .query<{ root_id: string; kind: string; ref: string | null; time: number; score: number; snip: string }, [string]>(
-          `select root_id, kind, ref, time, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
-           from doc where doc match ? order by rank limit 300`,
+        .query<
+          { root_id: string; kind: string; ref: string | null; time: number; score: number; snip: string },
+          [string, string, number]
+        >(
+          `select doc.root_id, doc.kind, doc.ref, doc.time, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
+           from doc join session r on r.id = doc.root_id
+           where doc match ? and doc.root_id != ? and (? or r.archived = 0) order by score limit 300`,
         )
-        .all(match)
+        .all(match, callerRoot, all)
       const titles = db
-        .query<{ root_id: string; score: number }, [string]>(
-          `select s.root_id, bm25(title_fts) score from title_fts join session s on s.rowid = title_fts.rowid
-           where title_fts match ? order by rank limit 200`,
+        .query<{ root_id: string; score: number }, [string, string, number]>(
+          `select s.root_id, bm25(title_fts) score
+           from title_fts join session s on s.rowid = title_fts.rowid join session r on r.id = s.root_id
+           where title_fts match ? and s.root_id != ? and (? or r.archived = 0) order by score limit 200`,
         )
-        .all(match)
+        .all(match, callerRoot, all)
       return { docs, titles }
     }
     let found = words.length ? search(words.join(" ")) : { docs: [], titles: [] }

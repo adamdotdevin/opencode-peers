@@ -6,7 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { backfill } from "../src/backfill.ts"
 import { find, terms } from "../src/find.ts"
-import { createIndexer } from "../src/indexer.ts"
+import { createIndexer, WRITE } from "../src/indexer.ts"
 import { headsUp } from "../src/overlap.ts"
 import { locate, writtenPaths } from "../src/repo.ts"
 import { envelope, send, type Api, type Session } from "../src/send.ts"
@@ -58,10 +58,8 @@ const created = (id: string, extra: { parentID?: string; directory?: string; tit
     type: "session.created",
     data: { sessionID: id, projectID: "p", location: { directory: extra.directory ?? repo }, parentID: extra.parentID, title: extra.title ?? `title ${id}` },
   }, NOW)
-const wrote = (id: string, file: string, time = NOW) => {
-  apply({ type: "session.tool.input.started", data: { sessionID: id, id: `call-${id}-${file}`, name: "edit" } }, time)
-  return apply({ type: "session.tool.called", data: { sessionID: id, id: `call-${id}-${file}`, input: { path: file } } }, time)
-}
+const wrote = (id: string, file: string, time = NOW) =>
+  apply({ type: WRITE, data: { sessionID: id, tool: "edit", input: { path: file } } }, time)
 
 beforeEach(() => {
   store = open(":memory:")
@@ -88,6 +86,14 @@ describe("send", () => {
     const group = await send(store, api, { sessionID: "ses_a", to: ["ses_b", "ses_c"], text: "hi all" }, options)
     expect(group.board).not.toBe(pair.board)
     expect(group.delivered.map((entry) => entry.id).sort()).toEqual(["ses_b", "ses_c"])
+  })
+
+  test("a rate-limited post doesn't join the board", async () => {
+    const api = fake([session("ses_a"), session("ses_b"), session("ses_c")])
+    const limited = { postsPer10Min: 1, now: NOW }
+    const { board } = await send(store, api, { sessionID: "ses_a", to: "ses_b", text: "first" }, limited)
+    expect(send(store, api, { sessionID: "ses_c", to: board, text: "me too" }, limited)).rejects.toThrow("loop")
+    expect(store.members(board)).not.toContain("ses_c")
   })
 
   test("posting to a board joins it and returns its history", async () => {
@@ -250,9 +256,32 @@ describe("indexer", () => {
 
   test("other tools don't record files", () => {
     created("ses_a")
-    apply({ type: "session.tool.input.started", data: { sessionID: "ses_a", id: "c1", name: "read" } })
-    apply({ type: "session.tool.called", data: { sessionID: "ses_a", id: "c1", input: { path: "src/x.ts" } } })
+    apply({ type: WRITE, data: { sessionID: "ses_a", tool: "read", input: { path: "src/x.ts" } } })
     expect(store.db.query("select count(*) n from file").get()).toEqual({ n: 0 })
+  })
+
+  test("an older write never replaces a newer one", () => {
+    created("ses_a")
+    wrote("ses_a", "src/x.ts", NOW)
+    wrote("ses_a", "src/x.ts", NOW - 2 * DAY)
+    expect(store.db.query("select time from file").get()).toEqual({ time: NOW })
+  })
+
+  test("a fork is indexed as its own root", () => {
+    created("ses_src", { directory: worktree })
+    apply({ type: "session.forked", data: { sessionID: "ses_fork", parentID: "ses_src" } }, NOW)
+    apply({ type: "session.text.ended", data: { sessionID: "ses_fork", text: "Forked work on the cache." } })
+    expect(store.session("ses_fork")).toMatchObject({ root_id: "ses_fork", parent_id: null, directory: worktree })
+    created("ses_me")
+    expect(find(store, "ses_me", { query: "cache" }, NOW).sessions.map((card) => card.id)).toEqual(["ses_fork"])
+  })
+
+  test("deleting a session keeps it out of results without touching the text index", () => {
+    created("ses_me")
+    created("ses_gone")
+    apply({ type: "session.text.ended", data: { sessionID: "ses_gone", text: "Cache warming." } })
+    apply({ type: "session.deleted", data: { sessionID: "ses_gone" } })
+    expect(find(store, "ses_me", { query: "cache" }, NOW).sessions).toHaveLength(0)
   })
 })
 
@@ -319,6 +348,18 @@ describe("find", () => {
     expect(card.active).toBe("20d ago")
   })
 
+  test("archived matches can't crowd out live sessions", () => {
+    created("ses_me")
+    created("ses_live")
+    apply({ type: "session.text.ended", data: { sessionID: "ses_live", text: "Touching the gateway pool." } })
+    for (let i = 0; i < 400; i++) {
+      created(`ses_old${i}`)
+      apply({ type: "session.text.ended", data: { sessionID: `ses_old${i}`, text: "gateway pool gateway pool" } })
+      apply({ type: "session.archived", data: { sessionID: `ses_old${i}` } })
+    }
+    expect(find(store, "ses_me", { query: "gateway pool" }, NOW).sessions.map((card) => card.id)).toEqual(["ses_live"])
+  })
+
   test("odd queries never break FTS syntax", () => {
     created("ses_me")
     expect(() => find(store, "ses_me", { query: 'foo" OR (bar* NEAR "' }, NOW)).not.toThrow()
@@ -377,8 +418,9 @@ describe("backfill", () => {
     message("m2", "assistant", 2, {
       content: [
         { type: "text", text: "The pool never releases sockets." },
-        { type: "tool", name: "edit", state: { input: { path: "src/pool.ts" } } },
-        { type: "tool", name: "read", state: { input: { path: "src/other.ts" } } },
+        { type: "tool", name: "edit", state: { status: "completed", input: { path: "src/pool.ts" } } },
+        { type: "tool", name: "edit", state: { status: "error", input: { path: "src/failed.ts" } } },
+        { type: "tool", name: "read", state: { status: "completed", input: { path: "src/other.ts" } } },
       ],
     })
     source.close()

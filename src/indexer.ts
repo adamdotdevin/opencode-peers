@@ -16,9 +16,11 @@ export const EVENT_TYPES = [
   "session.inbox.enqueued",
   "session.text.ended",
   "session.compaction.ended",
-  "session.tool.input.started",
-  "session.tool.called",
+  "session.forked",
 ] as const
+
+/** Not an OpenCode event: the plugin queues one when an edit, write or patch call succeeds. */
+export const WRITE = "peers.write"
 
 export interface Event {
   readonly type: string
@@ -36,14 +38,11 @@ export interface Written {
 export const PROMPT_LIMIT = 8_000
 export const TEXT_LIMIT = 4_000
 
-const WRITE_TOOLS = new Set(["edit", "write", "patch"])
+export const WRITE_TOOLS = new Set(["edit", "write", "patch"])
 
 export const clip = (text: string, limit: number) => (text.length > limit ? text.slice(0, limit) : text)
 
 export function createIndexer(store: Store) {
-  // Tool names arrive on input.started and inputs on called, both keyed by call ID.
-  const pending = new Map<string, string>()
-
   return function apply(event: Event, time = Date.now()): Written[] {
     const data = event.data
     const id: string = data.sessionID
@@ -61,6 +60,21 @@ export function createIndexer(store: Store) {
           updated: time,
         })
         if (data.title) store.setTitle(id, data.title)
+        return []
+      }
+      case "session.forked": {
+        // A fork is a new root in its source's directory. Its title arrives with a rename or the next header copy.
+        const source = store.session(data.parentID)
+        store.upsertSession({
+          id,
+          root_id: id,
+          parent_id: null,
+          directory: source?.directory ?? "",
+          title: "",
+          busy: 0,
+          archived: 0,
+          updated: time,
+        })
         return []
       }
       case "session.renamed":
@@ -106,15 +120,8 @@ export function createIndexer(store: Store) {
       case "session.compaction.ended":
         doc(data.text ?? "", "summary", PROMPT_LIMIT)
         return []
-      case "session.tool.input.started":
-        if (WRITE_TOOLS.has(data.name)) pending.set(data.id, data.name)
-        return []
-      case "session.tool.called": {
-        const tool = pending.get(data.id)
-        if (!tool) return []
-        pending.delete(data.id)
-        return recordWrites(store, session, tool, data.input ?? {}, time)
-      }
+      case WRITE:
+        return recordWrites(store, session, data.tool, data.input ?? {}, time)
     }
     return []
   }
