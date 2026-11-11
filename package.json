@@ -6,7 +6,9 @@
   "description": "Lets OpenCode sessions find each other and talk.",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "scripts": {
     "test": "bun test",

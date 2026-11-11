@@ -1,4 +1,6 @@
+import path from "node:path"
 import { branchOf, repoOf } from "./repo.ts"
+import type { ListOutput } from "./rpc.ts"
 import type { SessionRow, Store } from "./store.ts"
 
 export interface FindInput {
@@ -241,4 +243,26 @@ export function boardCard(store: Store, id: string, now = Date.now()): BoardCard
     members: store.members(id).map((member) => ({ id: member, title: store.session(member)?.title ?? "" })),
     ...(last ? { last: `${who(last)} (${ago(last.time, now)}): ${last.text.slice(0, 160)}` } : {}),
   }
+}
+
+/** What the TUI picker shows: boards with recent posts first, then live sessions near the one it opened in. */
+export function list(store: Store, sessionID = "", now = Date.now()): ListOutput {
+  const recent = store.db
+    .query<{ board_id: string }, []>("select board_id from post group by board_id order by max(time) desc limit 20")
+    .all()
+    .map((row) => row.board_id)
+  const boards = [...new Set([...store.boardsOf(sessionID), ...recent])].map((id) => {
+    const members = store.members(id).map((member) => store.session(member)?.title || member)
+    const post = store.lastPost(id)
+    const last = post && `${post.from_id === "user" ? "You" : post.from_title || post.from_id}, ${ago(post.time, now)}: ${post.text.split("\n")[0]}`
+    return { id, members, ...(last ? { last } : {}) }
+  })
+  const sessions = find(store, sessionID, { limit: 30 }, now).sessions.map((card) => ({
+    id: card.id,
+    title: card.title || "(untitled)",
+    state: card.state,
+    active: card.active,
+    where: card.branch ?? path.basename(card.directory),
+  }))
+  return { boards, sessions }
 }

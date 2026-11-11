@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { backfill } from "../src/backfill.ts"
-import { find, terms } from "../src/find.ts"
+import { find, list, terms } from "../src/find.ts"
 import { createIndexer, WRITE } from "../src/indexer.ts"
 import { headsUp } from "../src/overlap.ts"
 import { locate, writtenPaths } from "../src/repo.ts"
@@ -414,6 +414,20 @@ describe("find", () => {
     const theirs = await send(store, api, { sessionID: "ses_c", to: "ses_d", text: "migrating the ledger table" }, { postsPer10Min: 20, now: NOW })
     expect(find(store, "ses_a", {}, NOW).boards.map((board) => board.id)).toEqual([mine.board])
     expect(find(store, "ses_a", { query: "ledger" }, NOW).boards.map((board) => board.id)).toContain(theirs.board)
+  })
+})
+
+describe("picker list", () => {
+  test("recent boards with their last post, then live sessions; works without a session", async () => {
+    const api = fake([session("ses_a"), session("ses_b")])
+    created("ses_a", { title: "Billing" })
+    created("ses_b", { title: "Gateway" })
+    const { board } = await send(store, api, { sessionID: "ses_a", to: "ses_b", text: "rebasing now\nmore" }, { postsPer10Min: 20, now: NOW })
+    await send(store, api, { sessionID: "user", user: true, to: board, text: "hold off" }, { postsPer10Min: 20, now: NOW + 60_000 })
+    const result = list(store, undefined, NOW + 120_000)
+    expect(result.boards).toEqual([{ id: board, members: ["Billing", "Gateway"], last: "You, 1m ago: hold off" }])
+    expect(result.sessions.map((entry) => entry.title).sort()).toEqual(["Billing", "Gateway"])
+    expect(list(store, "ses_a", NOW).sessions.map((entry) => entry.id)).toEqual(["ses_b"])
   })
 })
 

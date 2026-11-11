@@ -3,9 +3,10 @@ import { readdirSync, readFileSync } from "node:fs"
 import { appendFile, mkdir } from "node:fs/promises"
 import path from "node:path"
 import { backfill } from "./backfill.ts"
-import { find, type FindOutput } from "./find.ts"
+import { find, list } from "./find.ts"
 import { createIndexer, EVENT_TYPES, WRITE, WRITE_TOOLS, type Event } from "./indexer.ts"
 import { headsUp } from "./overlap.ts"
+import { Peers } from "./rpc.ts"
 import { findOutput, sendOutput } from "./schema.ts"
 import { send, type Api, type SendOutput } from "./send.ts"
 import { dataDirectory, open, type Store } from "./store.ts"
@@ -201,36 +202,18 @@ export default Plugin.define({
       })
     })
 
-    await ctx.command.transform((editor) => {
-      editor.add({
-        name: "peers",
-        description: "Post to a peers board or session as yourself, or see this session's boards",
-        execute: async ({ sessionID, prompt }) => {
-          const note = (text: string, description: string) =>
-            ctx.session.synthetic({ sessionID, text, description, resume: false })
-          const text = prompt.text.trim()
-          if (!text) {
-            const result = find(store(), sessionID, {})
-            return void (await note(status(result), "peers · boards and sessions near this one"))
-          }
-          const [to = "", ...rest] = text.split(/\s+/)
-          if (!/^(brd|ses)_/.test(to) || rest.length === 0)
-            return void (await note("Usage: /peers <brd_… or ses_…> <message>, or /peers alone to see this session's boards.", "peers · usage"))
-          try {
-            const result = await send(store(), peers, { sessionID, user: true, to, text: text.slice(to.length).trim() }, options())
-            void log({ event: "post", from: "user", ...summary(result) }).catch(() => {})
-            // Recipients show the post in their transcripts. Only say something when one of them didn't get it live.
-            const missed = result.delivered.filter((entry) => !["woken", "next step", "woken from the archive"].includes(entry.how))
-            if (missed.length)
-              await note(
-                missed.map((entry) => `- ${entry.title || entry.id} (${entry.id}): ${entry.how}`).join("\n"),
-                `peers · ${missed.length} of ${result.delivered.length} didn't get it live`,
-              )
-          } catch (error) {
-            await note(`Not sent: ${error instanceof Error ? error.message : String(error)}`, "peers · not sent")
-          }
-        },
-      })
+    // The TUI's /peers picker reads and posts through these.
+    await ctx.rpc.register(Peers, {
+      list: async (input) => {
+        const { sessionID } = (input ?? {}) as { sessionID?: string }
+        return list(store(), sessionID)
+      },
+      post: async (input) => {
+        const { board, text } = input as { board: string; text: string }
+        const result = await send(store(), peers, { sessionID: "user", user: true, to: board, text }, options())
+        void log({ event: "post", from: "user", ...summary(result) }).catch(() => {})
+        return { delivered: result.delivered }
+      },
     })
 
     return () => {
@@ -248,19 +231,3 @@ const summary = (result: SendOutput) => ({
   board: result.board,
   to: result.delivered.map((entry) => ({ id: entry.id, how: entry.how })),
 })
-
-function status(result: FindOutput) {
-  const lines = [`Peers for this session (${result.you.id})`]
-  lines.push("", result.boards.length ? "Boards:" : "No boards yet.")
-  for (const board of result.boards) {
-    const members = board.members.map((member) => member.title || member.id).join(", ")
-    lines.push(`- ${board.id}: ${members}${board.last ? `\n  Last: ${board.last}` : ""}`)
-  }
-  lines.push("", result.sessions.length ? "Sessions near this one:" : "No other live sessions.")
-  for (const session of result.sessions) {
-    const files = session.files?.length ? `, also changed ${session.files.join(", ")}` : ""
-    lines.push(`- ${session.title || "(untitled)"} (${session.id}): ${session.state}, ${session.active}${session.branch ? `, ${session.branch}` : ""}${files}`)
-  }
-  return lines.join("\n")
-}
-
