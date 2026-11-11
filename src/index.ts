@@ -202,7 +202,7 @@ export default Plugin.define({
       })
     })
 
-    // The TUI's /peers picker reads and posts through these.
+    // The TUI part (src/tui.ts) reads and posts through these for its /peers picker.
     await ctx.rpc.register(Peers, {
       list: async (input) => {
         const { sessionID } = (input ?? {}) as { sessionID?: string }
