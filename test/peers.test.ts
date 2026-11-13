@@ -125,23 +125,40 @@ describe("send", () => {
     expect(result.delivered[0]!.id).toBe("ses_child")
   })
 
-  test("archived sessions wake only when named and their directory exists", async () => {
-    const api = fake([
-      session("ses_a"),
-      session("ses_old", { archived: true }),
-      session("ses_gone", { archived: true, location: { directory: "/nonexistent/peers" } }),
-    ])
+  test("archived sessions are never woken, even when named", async () => {
+    const api = fake([session("ses_a"), session("ses_b"), session("ses_old", { archived: true })])
     const named = await send(store, api, { sessionID: "ses_a", to: "ses_old", text: "who built this?" }, options)
-    expect(named.delivered[0]!.how).toBe("woken from the archive")
-    const gone = await send(store, api, { sessionID: "ses_a", to: "ses_gone", text: "hello?" }, options)
-    expect(gone.delivered[0]!.how).toStartWith("not delivered")
-    expect(api.sent).toHaveLength(1)
-
-    api.sessions.set("ses_b", session("ses_b"))
+    expect(named.delivered[0]!.how).toStartWith("queued: it's archived")
     const board = await send(store, api, { sessionID: "ses_a", to: ["ses_b", "ses_old"], text: "group" }, options)
-    const viaBoard = await send(store, api, { sessionID: "ses_b", to: board.board, text: "board post" }, options)
-    expect(viaBoard.delivered.find((entry) => entry.id === "ses_old")!.how).toStartWith("queued")
-    expect(api.sent.at(-1)!.resume).toBe(false)
+    expect(board.delivered.find((entry) => entry.id === "ses_old")!.how).toStartWith("queued")
+    expect(api.sent.filter((entry) => entry.sessionID === "ses_old").every((entry) => !entry.resume)).toBe(true)
+  })
+
+  test("only the user wakes a session they haven't prompted lately", async () => {
+    const api = fake([session("ses_a"), session("ses_stale"), session("ses_fresh")])
+    created("ses_stale")
+    created("ses_fresh")
+    store.db.query("update session set prompted = ? where id = 'ses_stale'").run(NOW - 7 * 3_600_000)
+    store.db.query("update session set prompted = ? where id = 'ses_fresh'").run(NOW - 5 * 3_600_000)
+
+    const { board, delivered } = await send(store, api, { sessionID: "ses_a", to: ["ses_stale", "ses_fresh"], text: "ping" }, options)
+    expect(Object.fromEntries(delivered.map((entry) => [entry.id, entry.how.split(":")[0]]))).toEqual({ ses_stale: "queued", ses_fresh: "woken" })
+    expect(api.sent.find((entry) => entry.sessionID === "ses_stale")!.resume).toBe(false)
+
+    // A peer waking it doesn't count as a prompt, so it stays inactive.
+    apply({ type: "session.inbox.enqueued", data: { sessionID: "ses_stale", item: { type: "synthetic", payload: { text: "peer" } } } }, NOW)
+    expect(store.active("ses_stale", NOW)).toBe(false)
+
+    const user = await send(store, api, { sessionID: "ses_other", user: true, to: board, text: "hold off" }, options)
+    expect(user.delivered.find((entry) => entry.id === "ses_stale")!.how).toBe("woken")
+    expect(store.active("ses_stale", NOW)).toBe(true)
+  })
+
+  test("an archived session whose directory is gone still gets the message queued", async () => {
+    const api = fake([session("ses_a"), session("ses_gone", { archived: true, location: { directory: "/nonexistent/peers" } })])
+    const result = await send(store, api, { sessionID: "ses_a", to: "ses_gone", text: "hello?" }, options)
+    expect(result.delivered[0]!.how).toStartWith("queued")
+    expect(api.sent[0]!.resume).toBe(false)
   })
 
   test("an idle session whose directory is gone isn't woken, even unarchived", async () => {
@@ -249,6 +266,19 @@ describe("indexer", () => {
     expect(kinds).toEqual(["prompt", "text", "summary"])
   })
 
+  test("a root's prompts and creation set its prompt time; subagent prompts and synthetic input don't", () => {
+    created("ses_root")
+    created("ses_child", { parentID: "ses_root" })
+    expect(store.session("ses_root")!.prompted).toBe(NOW)
+    const enqueue = (id: string, type: string, time: number) =>
+      apply({ type: "session.inbox.enqueued", data: { sessionID: id, item: { type, payload: { text: "go" } } } }, time)
+    enqueue("ses_child", "user", NOW + 1)
+    enqueue("ses_root", "synthetic", NOW + 2)
+    expect(store.session("ses_root")!.prompted).toBe(NOW)
+    enqueue("ses_root", "user", NOW + 3)
+    expect(store.session("ses_root")!.prompted).toBe(NOW + 3)
+  })
+
   test("busy and archived follow execution and archive events", () => {
     created("ses_a")
     apply({ type: "session.execution.started", data: { sessionID: "ses_a" } })
@@ -338,6 +368,18 @@ describe("find", () => {
     apply({ type: "session.archived", data: { sessionID: "ses_old" } })
     expect(find(store, "ses_me", {}, NOW).sessions).toHaveLength(0)
     expect(find(store, "ses_me", { all: true }, NOW).sessions.map((card) => card.id)).toEqual(["ses_old"])
+  })
+
+  test("sessions the user hasn't prompted lately only with all, unless they're busy", () => {
+    created("ses_me")
+    created("ses_stale", { title: "Stripe webhooks" })
+    created("ses_working", { title: "Stripe refunds" })
+    store.db.query("update session set prompted = ? where id != 'ses_me'").run(NOW - 7 * 3_600_000)
+    apply({ type: "session.execution.started", data: { sessionID: "ses_working" } }, NOW)
+    expect(find(store, "ses_me", {}, NOW).sessions.map((card) => card.id)).toEqual(["ses_working"])
+    expect(find(store, "ses_me", { query: "stripe" }, NOW).sessions.map((card) => card.id)).toEqual(["ses_working"])
+    const all = find(store, "ses_me", { query: "stripe", all: true }, NOW).sessions
+    expect(all.find((card) => card.id === "ses_stale")!.state).toBe("inactive")
   })
 
   test("a query matches subagent text, titles and file paths, ranked to the root", () => {
@@ -462,6 +504,16 @@ describe("overlap heads-up", () => {
     await headsUp(store, api, wrote("ses_a", "src/pool.ts", NOW + 1), NOW + 1)
     expect(api.sent).toHaveLength(0)
   })
+
+  test("sessions the user hasn't prompted lately don't count", async () => {
+    const api = fake([])
+    created("ses_a")
+    created("ses_b")
+    wrote("ses_b", "src/pool.ts")
+    const later = NOW + 7 * 3_600_000
+    await headsUp(store, api, wrote("ses_a", "src/pool.ts", later), later)
+    expect(api.sent).toHaveLength(0)
+  })
 })
 
 describe("backfill", () => {
@@ -520,6 +572,7 @@ describe("backfill", () => {
     // A later start keeps the first cutoff and skips the session already read.
     await backfill(store, { file, days: 30, now: NOW + 60_000 })
     expect(store.meta("backfill.until")).toBe(String(NOW))
+    expect(store.session("ses_2")!.prompted).toBe(NOW - 500)
     expect(store.db.query("select text from doc order by text").all()).toEqual([{ text: "prompt ses_1" }, { text: "prompt ses_2" }])
   })
 })

@@ -58,6 +58,7 @@ export function createIndexer(store: Store) {
           busy: 0,
           archived: 0,
           updated: time,
+          prompted: time,
         })
         if (data.title) store.setTitle(id, data.title)
         return []
@@ -74,6 +75,7 @@ export function createIndexer(store: Store) {
           busy: 0,
           archived: 0,
           updated: time,
+          prompted: time,
         })
         return []
       }
@@ -111,8 +113,10 @@ export function createIndexer(store: Store) {
 
     switch (event.type) {
       case "session.inbox.enqueued":
-        if (data.item?.type === "user" && typeof data.item.payload?.text === "string")
-          doc(data.item.payload.text, "prompt", PROMPT_LIMIT)
+        if (data.item?.type !== "user") return []
+        // A subagent's prompt comes from its parent, which may be answering a peer, so only a root's counts.
+        if (session.id === session.root_id) store.patchSession(id, { prompted: time })
+        if (typeof data.item.payload?.text === "string") doc(data.item.payload.text, "prompt", PROMPT_LIMIT)
         return []
       case "session.text.ended":
         doc(data.text ?? "", "text", TEXT_LIMIT)

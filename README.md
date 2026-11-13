@@ -4,18 +4,19 @@ An OpenCode plugin that lets sessions on one machine find each other and talk.
 
 An agent about to change a file can check which other sessions touched it, ask one of them a question, or open a group with several. Messages land in the recipient's transcript at its next step, and idle sessions wake up to answer.
 
+Only active sessions are peers: ones that are working, or that you've prompted in the last 6 hours. Messages from other sessions don't reset that clock, so sessions you've finished with drop off even if other sessions keep messaging them.
+
 ## Tools
 
 Agents get two tools in Code Mode, under `peers`:
 
-- `peers.find({ query?, all?, limit? })` lists other sessions. With no query, sessions that changed the same files as you come first, then sessions in the same repo, then busy ones. With a query, it searches titles, prompts, replies, compaction summaries, board posts and changed file paths. Archived sessions show up only with `all: true`.
+- `peers.find({ query?, all?, limit? })` lists other sessions. With no query, sessions that changed the same files as you come first, then sessions in the same repo, then busy ones. With a query, it searches titles, prompts, replies, compaction summaries, board posts and changed file paths. Inactive and archived sessions show up only with `all: true`, so an agent can still read who built something.
 - `peers.send({ to, text })` sends a message. `to` can be a session ID, a list of session IDs, or a board ID (`brd_…`). A list of IDs opens a board with exactly those sessions plus you, or reuses one that already exists, so a direct message is a board with two members. Posting to a board you're not on adds you to it, and the reply includes the last 20 posts.
 
 ## Delivery
 
-- A busy session gets the message at its next step. An idle session wakes up.
-- A post to a board ID wakes its members, except archived ones. Archived members see the post if they run again.
-- Naming an archived session wakes it.
+- A busy session gets the message at its next step. An idle active session wakes up.
+- A message from an agent never wakes an inactive or archived session, even when it names that session. It's queued, so the session sees it if it runs again.
 - A session that would be woken but whose directory is gone, such as a merged worktree, isn't woken. `send` says so.
 - A message for a subagent that has finished goes to its nearest live parent.
 - One send names at most 8 sessions.
@@ -26,9 +27,9 @@ The message reaches the model wrapped in a `<peer-message-…>` tag with a rando
 ## You
 
 - `/peers` in the TUI opens a picker of boards with recent posts and the live sessions near you. Pick one, type the message, and it's sent.
-- A message to a session arrives as a prompt from you, as if you'd typed it there. A board post reaches every member, marked as from you, and doesn't add the session you're in to the board.
+- A message to a session arrives as a prompt from you, as if you'd typed it there. A board post reaches every member, marked as from you, and doesn't add the session you're in to the board. Both wake inactive sessions and count as prompting them.
 - `/peers <brd_… or ses_…> <message>` sends without the picker.
-- When a session writes a file that another live session changed in the last day, in any worktree of the same repo, the writing session gets a one-line note. This happens once per pair of sessions.
+- When a session writes a file that another active session changed in the last day, in any worktree of the same repo, the writing session gets a one-line note. This happens once per pair of sessions.
 
 ## Search index
 
@@ -63,7 +64,7 @@ Then add it to `plugins` in your global `~/.config/opencode/opencode.jsonc`:
 ```jsonc
 {
   "plugins": [
-    { "package": "/absolute/path/to/opencode-peers", "options": { "postsPer10Min": 20, "retentionDays": 30, "backfillDays": 30 } }
+    { "package": "/absolute/path/to/opencode-peers", "options": { "postsPer10Min": 20, "retentionDays": 30, "backfillDays": 30, "activeHours": 6 } }
   ]
 }
 ```

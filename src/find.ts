@@ -12,7 +12,7 @@ export interface FindInput {
 export interface Card {
   id: string
   title: string
-  state: "busy" | "idle" | "archived"
+  state: "busy" | "idle" | "inactive" | "archived"
   active: string
   directory: string
   branch?: string
@@ -60,6 +60,9 @@ interface Hit {
 
 const DAY = 86_400_000
 
+/** SQL for "all was passed, or root r is an active peer", taking all then the cutoff from Store.activeSince. */
+const ACTIVE = "(? or (r.archived = 0 and (r.busy = 1 or r.prompted > ?)))"
+
 export function find(store: Store, callerID: string, input: FindInput, now = Date.now()): FindOutput {
   const db = store.db
   const limit = Math.min(Math.max(input.limit ?? 8, 1), 100)
@@ -82,30 +85,31 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
   }
   const matchedBoards = new Set<string>()
 
+  const all = input.all ? 1 : 0
+  const since = store.activeSince(now)
   const query = input.query?.trim()
   if (query) {
     const words = terms(query)
-    // Only sessions find can return count toward the limits, so archived text can't crowd out live sessions.
-    const all = input.all ? 1 : 0
+    // Only sessions find can return count toward the limits, so old text can't crowd out active sessions.
     const search = (match: string) => {
       const docs = db
         .query<
           { root_id: string; kind: string; ref: string | null; time: number; score: number; snip: string },
-          [string, string, number]
+          [string, string, number, number]
         >(
           `select doc.root_id, doc.kind, doc.ref, doc.time, bm25(doc) score, snippet(doc, 0, '«', '»', '…', 16) snip
            from doc left join session r on r.id = doc.root_id
-           where doc match ? and (doc.kind = 'post' or (doc.root_id != ? and (? or r.archived = 0)))
+           where doc match ? and (doc.kind = 'post' or (doc.root_id != ? and ${ACTIVE}))
            order by score limit 300`,
         )
-        .all(match, callerRoot, all)
+        .all(match, callerRoot, all, since)
       const titles = db
-        .query<{ root_id: string; score: number }, [string, string, number]>(
+        .query<{ root_id: string; score: number }, [string, string, number, number]>(
           `select s.root_id, bm25(title_fts) score
            from title_fts join session s on s.rowid = title_fts.rowid join session r on r.id = s.root_id
-           where title_fts match ? and s.root_id != ? and (? or r.archived = 0) order by score limit 200`,
+           where title_fts match ? and s.root_id != ? and ${ACTIVE} order by score limit 200`,
         )
-        .all(match, callerRoot, all)
+        .all(match, callerRoot, all, since)
       return { docs, titles }
     }
     let found = words.length ? search(words.join(" ")) : { docs: [], titles: [] }
@@ -129,11 +133,11 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
 
     if (/[/.]/.test(query)) {
       const files = db
-        .query<{ root_id: string; rel: string }, [string, number, string]>(
+        .query<{ root_id: string; rel: string }, [string, number, number, string]>(
           `select f.root_id, f.rel from file f join session r on r.id = f.root_id
-           where f.root_id != ? and (? or r.archived = 0) and f.rel like '%' || ? || '%' order by f.time desc limit 300`,
+           where f.root_id != ? and ${ACTIVE} and f.rel like '%' || ? || '%' order by f.time desc limit 300`,
         )
-        .all(callerRoot, all, query.replace(/^\.?\//, ""))
+        .all(callerRoot, all, since, query.replace(/^\.?\//, ""))
       for (const file of files) {
         const entry = hit(file.root_id)
         if (entry.files.size === 0) entry.score += 10
@@ -142,10 +146,10 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     }
   } else {
     const recent = db
-      .query<{ id: string }, [number]>(
-        `select id from session where parent_id is null and (? or archived = 0) order by updated desc limit 200`,
+      .query<{ id: string }, [number, number]>(
+        `select id from session r where parent_id is null and ${ACTIVE} order by updated desc limit 200`,
       )
-      .all(input.all ? 1 : 0)
+      .all(all, since)
     for (const row of recent) hit(row.id)
   }
 
@@ -164,17 +168,19 @@ export function find(store: Store, callerID: string, input: FindInput, now = Dat
     if (root === callerRoot) continue
     const row = store.session(root)
     if (!row || row.parent_id) continue
-    if (row.archived && !input.all) continue
+    const active = store.active(root, now)
+    if (!active && !input.all) continue
     const files = filesOf.all(root)
     const overlap = files.filter((file) => mineKeys.has(`${file.repo}\0${file.rel}`)).map((file) => file.rel)
     const sameRepo = files.some((file) => repos.has(file.repo)) || (repoOf(row.directory) ?? "\0") === ownRepo
     const subagents = runningSubagents.all(root)
     const busy = row.busy === 1 || subagents.length > 0
-    // Archiving bumps a session's updated time, so archived sessions age by their newest matching text instead.
-    const last = row.archived && entry.time ? entry.time : row.updated
+    // Archiving and peer messages bump a session's updated time, so inactive ones age by their newest matching text.
+    const last = !active && entry.time ? entry.time : row.updated
     const card = toCard(row, {
       last,
       busy,
+      active,
       sameRepo,
       branch: latestBranch.get(root)?.branch ?? branchOf(row.directory),
       files: overlap.length ? overlap.slice(0, 5) : [...entry.files].slice(0, 5),
@@ -211,6 +217,7 @@ function toCard(
   extra: {
     last: number
     busy: boolean
+    active: boolean
     sameRepo: boolean
     branch?: string
     files: string[]
@@ -222,7 +229,7 @@ function toCard(
   return {
     id: row.id,
     title: row.title,
-    state: row.archived ? "archived" : extra.busy ? "busy" : "idle",
+    state: row.archived ? "archived" : !extra.active ? "inactive" : extra.busy ? "busy" : "idle",
     active: ago(extra.last, extra.now),
     directory: row.directory,
     ...(extra.branch ? { branch: extra.branch } : {}),

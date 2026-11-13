@@ -52,6 +52,7 @@ export function settings(options: Record<string, unknown>) {
     postsPer10Min: number(options.postsPer10Min, 20),
     retentionDays: number(options.retentionDays, 30),
     backfillDays: number(options.backfillDays, 30),
+    activeHours: number(options.activeHours, 6),
   }
 }
 
@@ -88,13 +89,13 @@ function subscribe(state: Shared, ctx: Plugin.Context) {
 }
 
 function start(state: Shared, ctx: Plugin.Context) {
-  const store = open()
+  const { retentionDays, backfillDays, activeHours } = settings(ctx.options)
+  const store = open(undefined, { activeHours })
   state.store = store
   state.runtime = RUNTIME
   state.stopped = new AbortController()
   const apply = createIndexer(store)
   const current = () => state.contexts.at(-1) ?? ctx
-  const { retentionDays, backfillDays } = settings(ctx.options)
 
   subscribe(state, ctx)
 
@@ -159,12 +160,12 @@ export default Plugin.define({
       editor.add({
         name: "find",
         description:
-          "Find other sessions to coordinate with. With no query, lists live sessions near you: ones that changed the same files first, then ones in the same repo, then busy ones. With a query (a feature, file path or identifier), searches their titles, prompts, replies and changed files. all: true includes archived sessions, for finding who built something. Also returns your own session ID and your boards. Check it before changing shared code, or when the user mentions another session's work.",
+          "Find other sessions to coordinate with. Lists only active sessions: busy ones, and ones the user prompted in the last few hours. With no query, lists sessions near you: ones that changed the same files first, then ones in the same repo, then busy ones. With a query (a feature, file path or identifier), searches their titles, prompts, replies and changed files. all: true also includes inactive and archived sessions, for finding who built something; messages to those wait until they run again rather than waking them. Also returns your own session ID and your boards. Check it before changing shared code, or when the user mentions another session's work.",
         input: {
           type: "object",
           properties: {
             query: { type: "string", description: "Words, a file path or an identifier. Omit to list sessions near you." },
-            all: { type: "boolean", description: "Include archived sessions. Defaults to false." },
+            all: { type: "boolean", description: "Include inactive and archived sessions. Defaults to false." },
             limit: { type: "number", description: "Most sessions to return. Defaults to 8." },
           },
           additionalProperties: false,
@@ -178,7 +179,7 @@ export default Plugin.define({
       editor.add({
         name: "send",
         description:
-          "Message other sessions. to is a session ID, a list of session IDs (starts or reuses a group with exactly those sessions and you), or a board ID (brd_…) to post to that group, which also joins it. Recipients see it at their next step, and idle ones wake up. Replies arrive on their own as peer messages, so don't wait or poll. Keep it short and say whether you need an answer.",
+          "Message other sessions. to is a session ID, a list of session IDs (starts or reuses a group with exactly those sessions and you), or a board ID (brd_…) to post to that group, which also joins it. Recipients see it at their next step, and idle active ones wake up. Replies arrive on their own as peer messages, so don't wait or poll. Keep it short and say whether you need an answer.",
         input: {
           type: "object",
           properties: {

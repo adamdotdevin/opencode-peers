@@ -160,14 +160,16 @@ export async function send(
     if (reached.has(target.id)) continue
     reached.add(target.id)
 
-    const archived = target.time.archived !== undefined
-    const busy = isBusy(target)
     let how: string
-    let resume = true
-    if (archived && !named.includes(member)) {
-      resume = false
-      how = "queued: it's archived, so it sees this only if it runs again"
-    } else if (!busy && !existsSync(target.location.directory)) {
+    let resume = false
+    if (isBusy(target)) {
+      how = "next step"
+      resume = true
+    } else if (target.time.archived !== undefined) how = "queued: it's archived, so it sees this only if it runs again"
+    // Only the user wakes sessions they've stopped prompting, so old sessions can't keep each other running.
+    else if (!input.user && !store.active(target.id, now))
+      how = "queued: the user hasn't prompted it lately, so it sees this only if it runs again. Use peers.find with all: true to read what it did"
+    else if (!existsSync(target.location.directory)) {
       // A merged session's worktree is often removed before it's archived. Waking it would only fail the run.
       delivered.push({
         id: target.id,
@@ -175,7 +177,12 @@ export async function send(
         how: "not delivered: its directory is gone. Use peers.find to read what it did",
       })
       continue
-    } else how = archived ? "woken from the archive" : busy ? "next step" : "woken"
+    } else {
+      how = "woken"
+      resume = true
+      // A post from the user counts as prompting it, so it stays reachable for the rest of the window.
+      if (input.user) store.patchSession(store.session(target.id)?.root_id ?? target.id, { prompted: now })
+    }
 
     await api.synthetic({
       sessionID: target.id,

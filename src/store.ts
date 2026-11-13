@@ -16,6 +16,8 @@ export interface SessionRow {
   busy: number
   archived: number
   updated: number
+  /** When the user last prompted it, or when it was created. Peer messages don't move it. Kept on roots. */
+  prompted: number
 }
 
 export interface FileRow {
@@ -49,6 +51,7 @@ create table if not exists session (
   busy integer not null default 0,
   archived integer not null default 0,
   updated integer not null default 0,
+  prompted integer not null default 0,
   -- Set once the one-time backfill has read this session's history.
   backfilled integer not null default 0
 );
@@ -99,7 +102,7 @@ create index if not exists post_board on post (board_id, time);
 create table if not exists notified (a text not null, b text not null, primary key (a, b)) without rowid;
 `
 
-export function open(file = path.join(dataDirectory(), "peers.db")) {
+export function open(file = path.join(dataDirectory(), "peers.db"), options: { activeHours?: number } = {}) {
   // The index copies transcripts out of OpenCode's owner-only database, so it stays owner-only too.
   if (file !== ":memory:") {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -110,21 +113,26 @@ export function open(file = path.join(dataDirectory(), "peers.db")) {
   db.run("pragma synchronous = normal")
   db.run("pragma busy_timeout = 5000")
   db.run(SCHEMA)
-  return createStore(db)
+  // Indexes made before prompt times were tracked. Their sessions start at 0, and the header copy fills them in.
+  if (!db.query<{ name: string }, []>("pragma table_info(session)").all().some((column) => column.name === "prompted"))
+    db.run("alter table session add column prompted integer not null default 0")
+  return createStore(db, options)
 }
 
 export type Store = ReturnType<typeof createStore>
 
-export function createStore(db: Database) {
+export function createStore(db: Database, options: { activeHours?: number } = {}) {
+  const activeFor = (options.activeHours ?? 6) * 3_600_000
   const q = {
     session: db.query<SessionRow, [string]>("select * from session where id = ?"),
     upsertSession: db.query(
-      `insert into session (id, root_id, parent_id, directory, title, busy, archived, updated)
-       values ($id, $root_id, $parent_id, $directory, $title, $busy, $archived, $updated)
+      `insert into session (id, root_id, parent_id, directory, title, busy, archived, updated, prompted)
+       values ($id, $root_id, $parent_id, $directory, $title, $busy, $archived, $updated, $prompted)
        on conflict (id) do update set
          root_id = excluded.root_id, parent_id = excluded.parent_id,
          directory = excluded.directory, title = excluded.title, busy = excluded.busy,
-         archived = excluded.archived, updated = max(session.updated, excluded.updated)`,
+         archived = excluded.archived, updated = max(session.updated, excluded.updated),
+         prompted = max(session.prompted, excluded.prompted)`,
     ),
     rowid: db.query<{ rowid: number }, [string]>("select rowid from session where id = ?"),
     deleteTitle: db.query("delete from title_fts where rowid = ?"),
@@ -168,6 +176,18 @@ export function createStore(db: Database) {
     transaction: <T>(fn: () => T) => db.transaction(fn)(),
 
     session: (id: string) => q.session.get(id) ?? undefined,
+    /**
+     * Roots the user last prompted before this are inactive: agents can't wake them and find hides them, unless
+     * they're busy. Peer messages never move a prompt time, so sessions can't keep each other alive.
+     */
+    activeSince: (now: number) => now - activeFor,
+    /** Archived sessions and idle roots the user hasn't prompted lately aren't peers. Unknown ones count as active. */
+    active(id: string, now: number) {
+      const row = q.session.get(id)
+      if (!row) return true
+      const root = row.root_id === id ? row : (q.session.get(row.root_id) ?? row)
+      return root.archived === 0 && (root.busy === 1 || root.prompted > now - activeFor)
+    },
     upsertSession(row: SessionRow) {
       q.upsertSession.run({
         $id: row.id,
@@ -178,6 +198,7 @@ export function createStore(db: Database) {
         $busy: row.busy,
         $archived: row.archived,
         $updated: row.updated,
+        $prompted: row.prompted,
       })
     },
     /** Updates some fields of a known session. Unknown sessions are ignored: session.created adds them. */

@@ -20,13 +20,18 @@ interface Header {
   time_busy: number | null
   time_idle: number | null
   time_archived: number | null
+  prompted: number | null
 }
 
 /** Copies every session's header into the index. Cheap (a few thousand rows), so it runs at each start. */
 export function headers(source: Database, store: Store) {
   const rows = source
     .query<Header, []>(
-      "select id, parent_id, directory, title, time_updated, time_busy, time_idle, time_archived from session_v2",
+      `select id, parent_id, directory, title, time_updated, time_busy, time_idle, time_archived,
+         case when parent_id is null then
+           (select max(time_created) from session_message where session_id = session_v2.id and type = 'user')
+         end prompted
+       from session_v2`,
     )
     .all()
   const parents = new Map(rows.map((row) => [row.id, row.parent_id]))
@@ -47,6 +52,7 @@ export function headers(source: Database, store: Store) {
         busy: row.time_busy !== null && (row.time_idle === null || row.time_busy > row.time_idle) ? 1 : 0,
         archived: row.time_archived === null ? 0 : 1,
         updated: row.time_updated,
+        prompted: row.prompted ?? 0,
       })
       store.setTitle(row.id, row.title ?? "")
     }

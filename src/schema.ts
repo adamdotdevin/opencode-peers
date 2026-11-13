@@ -18,7 +18,7 @@ export const findOutput = {
         properties: {
           id: text,
           title: text,
-          state: { type: "string", enum: ["busy", "idle", "archived"] },
+          state: { type: "string", enum: ["busy", "idle", "inactive", "archived"] },
           active: { type: "string", description: "When it last worked, such as \"5m ago\"." },
           directory: text,
           branch: text,
